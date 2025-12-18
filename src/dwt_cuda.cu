@@ -37,183 +37,155 @@
  * CUDA Kernels for 5-3 Transform (Reversible - Integer)
  * ======================================================================== */
 
-/**
- * Horizontal 5-3 inverse DWT kernel
- * Each thread processes one row
- */
-__global__ void dwt53_inverse_h_kernel(int* data, int width, int height, 
-                                       int sn, int dn, int cas)
+// Forward 5-3 horizontal pass: one thread processes one row in-place
+__global__ void dwt53_forward_h_kernel(int* data,
+                                       int stride_w,
+                                       int rw,
+                                       int rh,
+                                       int cas_row)
 {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (row >= height) return;
-    
-    int* row_data = data + row * width;
-    int len = sn + dn;
-    
-    // Allocate shared memory for this row
-    extern __shared__ int s_mem[];
-    int* s_row = s_mem + threadIdx.y * width;
-    
-    // Load data to shared memory
-    for (int i = threadIdx.x; i < len; i += blockDim.x) {
-        s_row[i] = row_data[i];
-    }
-    __syncthreads();
-    
-    // Deinterleave: separate low and high pass
-    int* even = s_row;
-    int* odd = s_row + sn;
-    
-    if (cas == 0) {
-        // Predict step
-        if (threadIdx.x < sn) {
-            int i = threadIdx.x;
-            int prev = (i > 0) ? odd[i-1] : odd[0];
-            int next = (i < dn) ? odd[i] : odd[dn-1];
-            even[i] -= (prev + next + 2) >> 2;
-        }
-        __syncthreads();
-        
-        // Update step
-        if (threadIdx.x < dn) {
-            int i = threadIdx.x;
-            int prev = even[i];
-            int next = (i+1 < sn) ? even[i+1] : even[sn-1];
-            odd[i] += (prev + next) >> 1;
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rh) return;
+
+    int* row = data + r * stride_w;
+    int width = rw;
+    bool even = (cas_row == 0);
+    int sn = (width + (even ? 1 : 0)) >> 1;
+    int dn = width - sn;
+
+    if (even) {
+        if (width > 1) {
+            // Phase 1: compute high-pass and store at row[sn + i]
+            int i = 0;
+            for (i = 0; i < sn - 1; ++i) {
+                int s0 = row[2 * i];
+                int s1 = row[2 * (i + 1)];
+                row[sn + i] = row[2 * i + 1] - ((s0 + s1) >> 1);
+            }
+            if ((width & 1) == 0) {
+                // even width
+                row[sn + i] = row[2 * i + 1] - row[2 * i];
+            }
+
+            // Phase 2: update low-pass into positions [0..sn-1]
+            row[0] += (row[sn] + row[sn] + 2) >> 2;
+            for (i = 1; i < dn; ++i) {
+                row[i] = row[2 * i] + ((row[sn + i - 1] + row[sn + i] + 2) >> 2);
+            }
+            if ((width & 1) == 1) {
+                row[i] = row[2 * i] + ((row[sn + i - 1] + row[sn + i - 1] + 2) >> 2);
+            }
+            // High-pass already in place at row+sn
         }
     } else {
-        // Odd case
-        if (sn == 0 && dn == 1) {
-            if (threadIdx.x == 0) {
-                even[0] /= 2;
-            }
+        if (width == 1) {
+            row[0] *= 2;
         } else {
-            if (threadIdx.x < sn) {
-                int i = threadIdx.x;
-                int prev = (i > 0) ? even[i-1] : even[0];
-                int next = (i < dn) ? even[i] : even[dn-1];
-                odd[i] -= (prev + next + 2) >> 2;
+            // Phase 1: compute high-pass to row[sn + i]
+            row[sn + 0] = row[0] - row[1];
+            int i = 1;
+            for (; i < sn; ++i) {
+                int sR = row[2 * i + 1];
+                int sL = row[2 * (i - 1) + 1];
+                row[sn + i] = row[2 * i] - ((sR + sL) >> 1);
             }
-            __syncthreads();
-            
-            if (threadIdx.x < dn) {
-                int i = threadIdx.x;
-                int prev = (i > 0) ? odd[i-1] : odd[0];
-                int next = (i < sn) ? odd[i] : odd[sn-1];
-                even[i] += (prev + next) >> 1;
+            if ((width & 1) == 1) {
+                row[sn + i] = row[2 * i] - row[2 * (i - 1) + 1];
             }
-        }
-    }
-    __syncthreads();
-    
-    // Interleave back
-    if (cas == 0) {
-        for (int i = threadIdx.x; i < len; i += blockDim.x) {
-            if (i % 2 == 0) {
-                row_data[i] = even[i/2];
-            } else {
-                row_data[i] = odd[i/2];
+
+            // Phase 2: update low-pass into positions [0..sn-1]
+            for (i = 0; i < dn - 1; ++i) {
+                row[i] = row[2 * i + 1] + ((row[sn + i] + row[sn + i + 1] + 2) >> 2);
             }
-        }
-    } else {
-        for (int i = threadIdx.x; i < len; i += blockDim.x) {
-            if (i % 2 == 0) {
-                row_data[i] = odd[i/2];
-            } else {
-                row_data[i] = even[i/2];
+            if ((width & 1) == 0) {
+                row[i] = row[2 * i + 1] + ((row[sn + i] + row[sn + i] + 2) >> 2);
             }
+            // High-pass already in place at row+sn
         }
     }
 }
 
-/**
- * Vertical 5-3 inverse DWT kernel
- * Each thread processes one column
- */
-__global__ void dwt53_inverse_v_kernel(int* data, int width, int height,
-                                       int sn, int dn, int cas)
+// Forward 5-3 vertical pass: one thread processes one column in-place
+__global__ void dwt53_forward_v_kernel(int* data,
+                                       int stride_w,
+                                       int rw,
+                                       int rh,
+                                       int cas_col)
 {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (col >= width) return;
-    
-    int len = sn + dn;
-    
-    // Allocate shared memory for this column
-    extern __shared__ int s_mem[];
-    int* s_col = s_mem + threadIdx.x * height;
-    
-    // Load column data to shared memory
-    for (int i = 0; i < len; i++) {
-        s_col[i] = data[i * width + col];
-    }
-    __syncthreads();
-    
-    // Deinterleave
-    int* even = s_col;
-    int* odd = s_col + sn;
-    
-    // Temporary buffer for deinterleaved data
-    int temp[512]; // Assuming height won't exceed this
-    for (int i = 0; i < sn; i++) {
-        temp[i] = s_col[i];
-    }
-    for (int i = 0; i < dn; i++) {
-        temp[sn + i] = s_col[sn + i];
-    }
-    
-    if (cas == 0) {
-        // Predict
-        for (int i = 0; i < sn; i++) {
-            int prev = (i > 0) ? temp[sn + i - 1] : temp[sn];
-            int next = (i < dn) ? temp[sn + i] : temp[sn + dn - 1];
-            temp[i] -= (prev + next + 2) >> 2;
-        }
-        
-        // Update
-        for (int i = 0; i < dn; i++) {
-            int prev = temp[i];
-            int next = (i + 1 < sn) ? temp[i + 1] : temp[sn - 1];
-            temp[sn + i] += (prev + next) >> 1;
-        }
-        
-        // Interleave
-        for (int i = 0; i < len; i++) {
-            if (i % 2 == 0) {
-                s_col[i] = temp[i/2];
-            } else {
-                s_col[i] = temp[sn + i/2];
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= rw) return;
+
+    bool even = (cas_col == 0);
+    int height = rh;
+    int sn = (height + (even ? 1 : 0)) >> 1;
+    int dn = height - sn;
+
+    if (even) {
+        if (height > 1) {
+            // Phase 1: compute high-pass and store at row index sn + i
+            int i = 0;
+            for (i = 0; i < sn - 1; ++i) {
+                int s0 = data[(2 * i) * stride_w + c];
+                int s1 = data[(2 * (i + 1)) * stride_w + c];
+                int oddv = data[(2 * i + 1) * stride_w + c];
+                data[(sn + i) * stride_w + c] = oddv - ((s0 + s1) >> 1);
+            }
+            if ((height & 1) == 0) {
+                int oddv = data[(2 * i + 1) * stride_w + c];
+                int s0 = data[(2 * i) * stride_w + c];
+                data[(sn + i) * stride_w + c] = oddv - s0;
+            }
+
+            // Phase 2: update low-pass into top region
+            int hp0 = data[(sn + 0) * stride_w + c];
+            int s = data[0 * stride_w + c];
+            data[0 * stride_w + c] = s + ((hp0 + hp0 + 2) >> 2);
+            for (i = 1; i < dn; ++i) {
+                int hpm1 = data[(sn + i - 1) * stride_w + c];
+                int hp = data[(sn + i) * stride_w + c];
+                s = data[(2 * i) * stride_w + c];
+                data[i * stride_w + c] = s + ((hpm1 + hp + 2) >> 2);
+            }
+            if ((height & 1) == 1) {
+                int hpm1 = data[(sn + i - 1) * stride_w + c];
+                s = data[(2 * i) * stride_w + c];
+                data[i * stride_w + c] = s + ((hpm1 + hpm1 + 2) >> 2);
             }
         }
     } else {
-        // Odd case (similar logic)
-        if (sn == 0 && dn == 1) {
-            temp[0] /= 2;
+        if (height == 1) {
+            data[0 * stride_w + c] *= 2;
         } else {
-            for (int i = 0; i < sn; i++) {
-                int prev = (i > 0) ? temp[i - 1] : temp[0];
-                int next = (i < dn) ? temp[i] : temp[dn - 1];
-                temp[sn + i] -= (prev + next + 2) >> 2;
+            // Phase 1: compute high-pass
+            int odd0 = data[0 * stride_w + c];
+            int s1 = data[1 * stride_w + c];
+            data[(sn + 0) * stride_w + c] = odd0 - s1;
+            int i = 1;
+            for (; i < sn; ++i) {
+                int sR = data[(2 * i + 1) * stride_w + c];
+                int sL = data[(2 * (i - 1) + 1) * stride_w + c];
+                int evenv = data[(2 * i) * stride_w + c];
+                data[(sn + i) * stride_w + c] = evenv - ((sR + sL) >> 1);
             }
-            
-            for (int i = 0; i < dn; i++) {
-                int prev = (i > 0) ? temp[sn + i - 1] : temp[sn];
-                int next = (i < sn) ? temp[sn + i] : temp[sn + sn - 1];
-                temp[i] += (prev + next) >> 1;
+            if ((height & 1) == 1) {
+                int evenv = data[(2 * i) * stride_w + c];
+                int sL = data[(2 * (i - 1) + 1) * stride_w + c];
+                data[(sn + i) * stride_w + c] = evenv - sL;
             }
-            
-            for (int i = 0; i < len; i++) {
-                if (i % 2 == 0) {
-                    s_col[i] = temp[sn + i/2];
-                } else {
-                    s_col[i] = temp[i/2];
-                }
+
+            // Phase 2: update low-pass into top region
+            for (i = 0; i < dn - 1; ++i) {
+                int hp = data[(sn + i) * stride_w + c];
+                int hp1 = data[(sn + i + 1) * stride_w + c];
+                int oddv = data[(2 * i + 1) * stride_w + c];
+                data[i * stride_w + c] = oddv + ((hp + hp1 + 2) >> 2);
+            }
+            if ((height & 1) == 0) {
+                int hp = data[(sn + i) * stride_w + c];
+                int oddv = data[(2 * i + 1) * stride_w + c];
+                data[i * stride_w + c] = oddv + ((hp + hp + 2) >> 2);
             }
         }
-    }
-    
-    // Write back to global memory
-    for (int i = 0; i < len; i++) {
-        data[i * width + col] = s_col[i];
     }
 }
 
@@ -353,34 +325,47 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     // Copy data to device
     CUDA_CHECK(cudaMemcpy(d_data, tilec->data, data_size, cudaMemcpyHostToDevice));
     
-    // Process each resolution level
-    for (OPJ_UINT32 resno = 0; resno < tilec->numresolutions - 1; resno++) {
-        opj_tcd_resolution_t* res = &tilec->resolutions[resno];
-        
-        int sn = (int)((res->x1 - res->x0 + 1) / 2);
-        int dn = (int)((res->x1 - res->x0) / 2);
-        int cas = res->x0 % 2;
-        
-        // Launch horizontal DWT kernel
-        dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
-        dim3 grid((rw + block.x - 1) / block.x, (rh + block.y - 1) / block.y);
-        size_t shared_mem = block.y * rw * sizeof(int);
-        
-        dwt53_inverse_h_kernel<<<grid, block, shared_mem>>>(d_data, rw, rh, sn, dn, cas);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-        
-        // Launch vertical DWT kernel
-        sn = (int)((res->y1 - res->y0 + 1) / 2);
-        dn = (int)((res->y1 - res->y0) / 2);
-        cas = res->y0 % 2;
-        
-        grid = dim3((rw + block.x - 1) / block.x, 1);
-        shared_mem = block.x * rh * sizeof(int);
-        
-        dwt53_inverse_v_kernel<<<grid, block, shared_mem>>>(d_data, rw, rh, sn, dn, cas);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
+    // Process each resolution level from high to low as CPU does
+    int l = (int)tilec->numresolutions - 1;
+    if (l <= 0) {
+        // No transform to perform
+        CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+        cudaFree(d_data);
+        return OPJ_TRUE;
+    }
+
+    opj_tcd_resolution_t* cur = tilec->resolutions + l;
+    opj_tcd_resolution_t* prev = cur - 1;
+
+    for (int i = l - 1; i >= 0; --i) {
+        OPJ_UINT32 rw_lvl  = (OPJ_UINT32)(cur->x1  - cur->x0);
+        OPJ_UINT32 rh_lvl  = (OPJ_UINT32)(cur->y1  - cur->y0);
+        OPJ_UINT32 rw1_lvl = (OPJ_UINT32)(prev->x1 - prev->x0);
+        OPJ_UINT32 rh1_lvl = (OPJ_UINT32)(prev->y1 - prev->y0);
+        int cas_row = (int)(cur->x0 & 1);
+        int cas_col = (int)(cur->y0 & 1);
+
+        // Vertical pass first
+        {
+            int threads = 128;
+            int blocks = (int)((rw_lvl + threads - 1) / threads);
+            dwt53_forward_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+
+        // Horizontal pass
+        {
+            int threads = 128;
+            int blocks = (int)((rh_lvl + threads - 1) / threads);
+            dwt53_forward_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+
+        // Move down one resolution
+        cur = prev;
+        prev = prev - 1;
     }
     
     // Copy result back to host
@@ -398,18 +383,10 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
 OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UINT32 numres)
 {
     (void)p_tcd;
+    (void)tilec;
     (void)numres;
-    
-    if (!cuda_device_initialized) {
-        if (!opj_dwt_cuda_init()) {
-            return OPJ_FALSE;
-        }
-    }
-    
-    // Similar implementation as encode, but for decoding
-    // (Implementation follows same pattern as encode)
-    
-    return OPJ_TRUE;
+    // Not implemented yet: keep CPU decode path for correctness
+    return OPJ_FALSE;
 }
 
 /**

@@ -2116,6 +2116,11 @@ static INLINE OPJ_BOOL opj_dwt_encode_procedure(opj_thread_pool_t* tp,
 OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
                         opj_tcd_tilecomp_t * tilec)
 {
+#ifdef USE_CUDA_DWT
+    if (opj_dwt_encode_cuda(p_tcd, tilec)) {
+        return OPJ_TRUE;
+    }
+#endif
     return opj_dwt_encode_procedure(p_tcd->thread_pool, tilec,
                                     opj_dwt_encode_and_deinterleave_v,
                                     opj_dwt_encode_and_deinterleave_h_one_row);
