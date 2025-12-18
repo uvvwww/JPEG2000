@@ -69,41 +69,59 @@ static int write_pnm_u8(const char* path, const opj_image_t* image) {
     }
 
     const size_t pixels = (size_t)width * (size_t)height;
+    
     if (numcomps == 3) {
+        // Allocate buffer for entire image to enable single fwrite
+        unsigned char* buffer = (unsigned char*)malloc(pixels * 3);
+        if (!buffer) {
+            fclose(fp);
+            return 0;
+        }
+        
+        int rshift = (int)image->comps[0].prec - 8;
+        int gshift = (int)image->comps[1].prec - 8;
+        int bshift = (int)image->comps[2].prec - 8;
+        
         for (size_t i = 0; i < pixels; i++) {
             int r = image->comps[0].data[i];
             int g = image->comps[1].data[i];
             int b = image->comps[2].data[i];
-
-            /* If precision > 8, downshift to 8-bit. */
-            int rshift = (int)image->comps[0].prec - 8;
-            int gshift = (int)image->comps[1].prec - 8;
-            int bshift = (int)image->comps[2].prec - 8;
+            
             if (rshift > 0) r >>= rshift;
             if (gshift > 0) g >>= gshift;
             if (bshift > 0) b >>= bshift;
-
-            unsigned char out[3];
-            out[0] = clamp_u8(r);
-            out[1] = clamp_u8(g);
-            out[2] = clamp_u8(b);
-            if (fwrite(out, 1, 3, fp) != 3) {
-                fclose(fp);
-                return 0;
-            }
+            
+            buffer[i * 3 + 0] = clamp_u8(r);
+            buffer[i * 3 + 1] = clamp_u8(g);
+            buffer[i * 3 + 2] = clamp_u8(b);
+        }
+        
+        size_t written = fwrite(buffer, 1, pixels * 3, fp);
+        free(buffer);
+        if (written != pixels * 3) {
+            fclose(fp);
+            return 0;
         }
     } else {
+        // Allocate buffer for grayscale
+        unsigned char* buffer = (unsigned char*)malloc(pixels);
+        if (!buffer) {
+            fclose(fp);
+            return 0;
+        }
+        
+        int shift = (int)image->comps[0].prec - 8;
         for (size_t i = 0; i < pixels; i++) {
             int v = image->comps[0].data[i];
-            int shift = (int)image->comps[0].prec - 8;
-            if (shift > 0) {
-                v >>= shift;
-            }
-            unsigned char out = clamp_u8(v);
-            if (fwrite(&out, 1, 1, fp) != 1) {
-                fclose(fp);
-                return 0;
-            }
+            if (shift > 0) v >>= shift;
+            buffer[i] = clamp_u8(v);
+        }
+        
+        size_t written = fwrite(buffer, 1, pixels, fp);
+        free(buffer);
+        if (written != pixels) {
+            fclose(fp);
+            return 0;
         }
     }
 

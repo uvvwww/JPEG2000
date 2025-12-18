@@ -2132,6 +2132,12 @@ OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
 OPJ_BOOL opj_dwt_decode(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t* tilec,
                         OPJ_UINT32 numres)
 {
+#ifdef USE_CUDA_DWT
+    if (opj_dwt_decode_cuda(p_tcd, tilec, numres)) {
+        return OPJ_TRUE;
+    }
+    // Fall back to CPU if CUDA fails
+#endif
     if (p_tcd->whole_tile_decoding) {
         return opj_dwt_decode_tile(p_tcd->thread_pool, tilec, numres);
     } else {

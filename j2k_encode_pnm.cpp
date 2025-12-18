@@ -155,14 +155,23 @@ static opj_image_t* load_pnm_as_image(const char* path) {
     }
 
     if (is_ppm) {
+        // Deinterleave RGB with better cache locality
+        OPJ_INT32* r_data = image->comps[0].data;
+        OPJ_INT32* g_data = image->comps[1].data;
+        OPJ_INT32* b_data = image->comps[2].data;
+        const unsigned char* src = data;
+        
         for (size_t i = 0; i < pixels; i++) {
-            image->comps[0].data[i] = data[i * 3 + 0];
-            image->comps[1].data[i] = data[i * 3 + 1];
-            image->comps[2].data[i] = data[i * 3 + 2];
+            r_data[i] = src[0];
+            g_data[i] = src[1];
+            b_data[i] = src[2];
+            src += 3;
         }
     } else {
+        // Direct memcpy would work if types matched, but need int32 conversion
+        OPJ_INT32* gray_data = image->comps[0].data;
         for (size_t i = 0; i < pixels; i++) {
-            image->comps[0].data[i] = data[i];
+            gray_data[i] = data[i];
         }
     }
 
@@ -206,7 +215,7 @@ int main(int argc, char** argv) {
     opj_set_info_handler(codec, info_callback, NULL);
 
     // Set number of threads for parallel encoding
-    int num_threads = 4; // Default to 4 threads
+    int num_threads = 32; // Default to 4 threads
     const char* env_threads = getenv("OMP_NUM_THREADS");
     if (env_threads) {
         num_threads = atoi(env_threads);

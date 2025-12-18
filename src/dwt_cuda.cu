@@ -212,6 +212,160 @@ __global__ void dwt53_forward_v_kernel(int* data,
 }
 
 /* ========================================================================
+ * CUDA Kernels for 5-3 Inverse Transform (Decode)
+ * ======================================================================== */
+
+// Inverse 5-3 horizontal pass: one thread processes one row using temp buffer
+__global__ void dwt53_inverse_h_kernel(int* data,
+                                       int stride_w,
+                                       int rw,
+                                       int rh,
+                                       int cas_row,
+                                       int* tmp_buffer)
+{
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rh) return;
+
+    int* row = data + r * stride_w;
+    int* tmp = tmp_buffer + r * rw;
+    int width = rw;
+    bool even = (cas_row == 0);
+    int sn = (width + (even ? 1 : 0)) >> 1;
+    int dn = width - sn;
+
+    // Input layout: low-pass at [0..sn-1], high-pass at [sn..sn+dn-1]
+    // Need to reconstruct interleaved even/odd samples
+
+    if (even) {
+        if (width > 1) {
+            // Phase 1: Undo update - reconstruct even samples into tmp
+            // even[i] = low[i] - ((high[i-1] + high[i] + 2) >> 2)
+            tmp[0] = row[0] - ((row[sn] + row[sn] + 2) >> 2);
+            for (int i = 1; i < sn; ++i) {
+                int hprev = (i - 1 < dn) ? row[sn + i - 1] : row[sn + dn - 1];
+                int h = (i < dn) ? row[sn + i] : row[sn + dn - 1];
+                tmp[i] = row[i] - ((hprev + h + 2) >> 2);
+            }
+            
+            // Phase 2: Undo predict - reconstruct odd samples
+            // odd[i] = high[i] + ((even[i] + even[i+1]) >> 1)
+            for (int i = 0; i < dn; ++i) {
+                int e0 = tmp[i];
+                int e1 = (i + 1 < sn) ? tmp[i + 1] : tmp[sn - 1];
+                tmp[sn + i] = row[sn + i] + ((e0 + e1) >> 1);
+            }
+            
+            // Phase 3: Interleave even/odd back into row
+            for (int i = 0; i < sn; ++i) {
+                row[2 * i] = tmp[i];
+            }
+            for (int i = 0; i < dn; ++i) {
+                row[2 * i + 1] = tmp[sn + i];
+            }
+        }
+    } else {
+        // cas_row == 1: first sample is odd
+        if (width == 1) {
+            row[0] /= 2;
+        } else {
+            // Phase 1: Undo update
+            for (int i = 0; i < sn; ++i) {
+                int e0 = (i > 0) ? row[i - 1] : row[0];
+                int e1 = (i < dn) ? row[i] : row[dn - 1];
+                tmp[sn + i] = row[sn + i] - ((e0 + e1 + 2) >> 2);
+            }
+            
+            // Phase 2: Undo predict
+            for (int i = 0; i < dn; ++i) {
+                int o0 = tmp[sn + i];
+                int o1 = (i + 1 < sn) ? tmp[sn + i + 1] : tmp[sn + sn - 1];
+                tmp[i] = row[i] + ((o0 + o1) >> 1);
+            }
+            
+            // Phase 3: Interleave odd/even
+            for (int i = 0; i < sn; ++i) {
+                row[2 * i] = tmp[sn + i];
+            }
+            for (int i = 0; i < dn; ++i) {
+                row[2 * i + 1] = tmp[i];
+            }
+        }
+    }
+}
+
+// Inverse 5-3 vertical pass: one thread processes one column using temp buffer
+__global__ void dwt53_inverse_v_kernel(int* data,
+                                       int stride_w,
+                                       int rw,
+                                       int rh,
+                                       int cas_col,
+                                       int* tmp_buffer)
+{
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= rw) return;
+
+    int* tmp = tmp_buffer + c * rh;
+    bool even = (cas_col == 0);
+    int height = rh;
+    int sn = (height + (even ? 1 : 0)) >> 1;
+    int dn = height - sn;
+
+    if (even) {
+        if (height > 1) {
+            // Phase 1: Undo update - reconstruct even samples
+            int h0 = data[(sn + 0) * stride_w + c];
+            tmp[0] = data[0 * stride_w + c] - ((h0 + h0 + 2) >> 2);
+            for (int i = 1; i < sn; ++i) {
+                int hprev = (i - 1 < dn) ? data[(sn + i - 1) * stride_w + c] : data[(sn + dn - 1) * stride_w + c];
+                int h = (i < dn) ? data[(sn + i) * stride_w + c] : data[(sn + dn - 1) * stride_w + c];
+                tmp[i] = data[i * stride_w + c] - ((hprev + h + 2) >> 2);
+            }
+            
+            // Phase 2: Undo predict - reconstruct odd samples
+            for (int i = 0; i < dn; ++i) {
+                int e0 = tmp[i];
+                int e1 = (i + 1 < sn) ? tmp[i + 1] : tmp[sn - 1];
+                tmp[sn + i] = data[(sn + i) * stride_w + c] + ((e0 + e1) >> 1);
+            }
+            
+            // Phase 3: Interleave
+            for (int i = 0; i < sn; ++i) {
+                data[(2 * i) * stride_w + c] = tmp[i];
+            }
+            for (int i = 0; i < dn; ++i) {
+                data[(2 * i + 1) * stride_w + c] = tmp[sn + i];
+            }
+        }
+    } else {
+        if (height == 1) {
+            data[0 * stride_w + c] /= 2;
+        } else {
+            // Phase 1: Undo update
+            for (int i = 0; i < sn; ++i) {
+                int e0 = (i > 0) ? data[(i - 1) * stride_w + c] : data[0 * stride_w + c];
+                int e1 = (i < dn) ? data[i * stride_w + c] : data[(dn - 1) * stride_w + c];
+                tmp[sn + i] = data[(sn + i) * stride_w + c] - ((e0 + e1 + 2) >> 2);
+            }
+            
+            // Phase 2: Undo predict
+            for (int i = 0; i < dn; ++i) {
+                int o0 = tmp[sn + i];
+                int o1 = (i + 1 < sn) ? tmp[sn + i + 1] : tmp[sn + sn - 1];
+                tmp[i] = data[i * stride_w + c] + ((o0 + o1) >> 1);
+            }
+            
+            // Phase 3: Interleave
+            for (int i = 0; i < sn; ++i) {
+                data[(2 * i) * stride_w + c] = tmp[sn + i];
+            }
+            for (int i = 0; i < dn; ++i) {
+                data[(2 * i + 1) * stride_w + c] = tmp[i];
+            }
+        }
+    }
+}
+
+/* ========================================================================
  * CUDA Kernels for 9-7 Transform (Irreversible - Float)
  * ======================================================================== */
 
@@ -410,10 +564,79 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
 OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UINT32 numres)
 {
     (void)p_tcd;
-    (void)tilec;
-    (void)numres;
-    // Not implemented yet: keep CPU decode path for correctness
-    return OPJ_FALSE;
+    
+    if (!cuda_device_initialized) {
+        if (!opj_dwt_cuda_init()) {
+            return OPJ_FALSE;
+        }
+    }
+    
+    // Get tile dimensions
+    OPJ_UINT32 rw = (OPJ_UINT32)(tilec->x1 - tilec->x0);
+    OPJ_UINT32 rh = (OPJ_UINT32)(tilec->y1 - tilec->y0);
+    
+    if (rw == 0 || rh == 0) {
+        return OPJ_TRUE;
+    }
+    
+    if (tilec->numresolutions == 1 || numres == 1) {
+        return OPJ_TRUE;
+    }
+    
+    // Allocate device memory
+    int* d_data;
+    int* d_tmp;
+    size_t data_size = rw * rh * sizeof(OPJ_INT32);
+    size_t tmp_size = rw * rh * sizeof(OPJ_INT32);
+    CUDA_CHECK(cudaMalloc(&d_data, data_size));
+    CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
+    
+    // Copy data to device
+    CUDA_CHECK(cudaMemcpy(d_data, tilec->data, data_size, cudaMemcpyHostToDevice));
+    
+    // Decode: process from lowest resolution to highest (opposite of encode)
+    // Each level reconstructs one higher resolution
+    OPJ_UINT32 num_levels = (numres < tilec->numresolutions) ? numres : (tilec->numresolutions - 1);
+    
+    for (OPJ_UINT32 resno = tilec->numresolutions - num_levels; resno < tilec->numresolutions; ++resno) {
+        opj_tcd_resolution_t* res = &tilec->resolutions[resno];
+        
+        OPJ_UINT32 rw_lvl = (OPJ_UINT32)(res->x1 - res->x0);
+        OPJ_UINT32 rh_lvl = (OPJ_UINT32)(res->y1 - res->y0);
+        int cas_row = (int)(res->x0 & 1);
+        int cas_col = (int)(res->y0 & 1);
+        
+        if (rw_lvl <= 1 && rh_lvl <= 1) {
+            continue;
+        }
+        
+        // Horizontal pass first (opposite of encode)
+        if (rw_lvl > 1) {
+            int threads = 128;
+            int blocks = (int)((rh_lvl + threads - 1) / threads);
+            dwt53_inverse_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+        
+        // Vertical pass (opposite of encode)
+        if (rh_lvl > 1) {
+            int threads = 128;
+            int blocks = (int)((rw_lvl + threads - 1) / threads);
+            dwt53_inverse_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+    }
+    
+    // Copy result back to host
+    CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+    
+    // Free device memory
+    cudaFree(d_tmp);
+    cudaFree(d_data);
+    
+    return OPJ_TRUE;
 }
 
 /**
