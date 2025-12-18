@@ -1,0 +1,67 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables
+j2k_encode_pnm
+j2k_decode_pnm
+j2k_encode_profile
+j2k_decode_profile
+j2k_encode_mpi
+*.exe
+
+# Large image files
+*.ppm
+*.pnm
+*.pgm
+*.png
+*.jpg
+*.jpeg
+*.jp2
+*.j2k
+*.j2c
+
+# Output files
+output/*.j2k
+output/*.ppm
+output/*.pnm
+output/*.pgm
+*.ppm
+*.pnm
+*.pgm
+
+# Profiling and logs
+profiling_results.txt
+*.log
+*.err
+*.out
+
+# Temporary files
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# SLURM
+slurm-*.out
+slurm-*.err
+
+# System
+.gitkeep
+EOF
