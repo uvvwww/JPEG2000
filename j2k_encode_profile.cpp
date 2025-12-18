@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
     opj_set_info_handler(codec, info_callback, NULL);
 
     // Set number of threads for parallel encoding
-    int num_threads = 4;
+    int num_threads = 32; // Default to 32 threads
     const char* env_threads = getenv("OMP_NUM_THREADS");
     if (env_threads) {
         num_threads = atoi(env_threads);
