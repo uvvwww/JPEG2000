@@ -328,3 +328,379 @@ End compress:       0.0073 s (  0.4%)
 TOTAL TIME:         1.8305 s
 ====================================
 
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.2056 s ( 10.9%)
+Setup encoder:      0.0289 s (  1.5%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):      1.6423 s ( 87.0%)
+  ├─ DC shift:      0.0232 s (  1.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0424 s (  2.2%)
+  ├─ T1 (quant):    1.3395 s ( 70.9%)
+  ├─ Rate alloc:    0.0749 s (  4.0%)
+  └─ T2 (stream):   0.0706 s (  3.7%)
+------------------------------------
+End compress:       0.0117 s (  0.6%)
+====================================
+TOTAL TIME:         1.8886 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1305 s ( 13.6%)
+Setup encoder:      0.0048 s (  0.5%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8142 s ( 85.1%)
+  ├─ DC shift:      0.0233 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0262 s (  2.7%)
+  ├─ T1 (quant):    0.6446 s ( 67.4%)
+  ├─ Rate alloc:    0.0050 s (  0.5%)
+  └─ T2 (stream):   0.0249 s (  2.6%)
+------------------------------------
+End compress:       0.0069 s (  0.7%)
+====================================
+TOTAL TIME:         0.9564 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1225 s ( 12.7%)
+Setup encoder:      0.0017 s (  0.2%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8342 s ( 86.4%)
+  ├─ DC shift:      0.0232 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0254 s (  2.6%)
+  ├─ T1 (quant):    0.6660 s ( 69.0%)
+  ├─ Rate alloc:    0.0047 s (  0.5%)
+  └─ T2 (stream):   0.0255 s (  2.6%)
+------------------------------------
+End compress:       0.0074 s (  0.8%)
+====================================
+TOTAL TIME:         0.9658 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1306 s ( 13.5%)
+Setup encoder:      0.0014 s (  0.1%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):      0.8313 s ( 85.7%)
+  ├─ DC shift:      0.0232 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0263 s (  2.7%)
+  ├─ T1 (quant):    0.6634 s ( 68.4%)
+  ├─ Rate alloc:    0.0044 s (  0.5%)
+  └─ T2 (stream):   0.0247 s (  2.5%)
+------------------------------------
+End compress:       0.0073 s (  0.7%)
+====================================
+TOTAL TIME:         0.9705 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1203 s ( 12.4%)
+Setup encoder:      0.0015 s (  0.1%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8419 s ( 86.5%)
+  ├─ DC shift:      0.0324 s (  3.3%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0238 s (  2.4%)
+  ├─ T1 (quant):    0.6589 s ( 67.7%)
+  ├─ Rate alloc:    0.0058 s (  0.6%)
+  └─ T2 (stream):   0.0272 s (  2.8%)
+------------------------------------
+End compress:       0.0099 s (  1.0%)
+====================================
+TOTAL TIME:         0.9735 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.2295 s ( 18.7%)
+Setup encoder:      0.0010 s (  0.1%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.9891 s ( 80.6%)
+  ├─ DC shift:      0.0234 s (  1.9%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0249 s (  2.0%)
+  ├─ T1 (quant):    0.6550 s ( 53.4%)
+  ├─ Rate alloc:    0.0048 s (  0.4%)
+  └─ T2 (stream):   0.0249 s (  2.0%)
+------------------------------------
+End compress:       0.0075 s (  0.6%)
+====================================
+TOTAL TIME:         1.2271 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1224 s ( 12.6%)
+Setup encoder:      0.0024 s (  0.2%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8439 s ( 86.5%)
+  ├─ DC shift:      0.0235 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0247 s (  2.5%)
+  ├─ T1 (quant):    0.6749 s ( 69.2%)
+  ├─ Rate alloc:    0.0050 s (  0.5%)
+  └─ T2 (stream):   0.0249 s (  2.6%)
+------------------------------------
+End compress:       0.0069 s (  0.7%)
+====================================
+TOTAL TIME:         0.9756 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1224 s ( 12.6%)
+Setup encoder:      0.0018 s (  0.2%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8363 s ( 86.4%)
+  ├─ DC shift:      0.0234 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0267 s (  2.8%)
+  ├─ T1 (quant):    0.6665 s ( 68.9%)
+  ├─ Rate alloc:    0.0047 s (  0.5%)
+  └─ T2 (stream):   0.0253 s (  2.6%)
+------------------------------------
+End compress:       0.0074 s (  0.8%)
+====================================
+TOTAL TIME:         0.9680 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1257 s ( 12.4%)
+Setup encoder:      0.0020 s (  0.2%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.8720 s ( 86.3%)
+  ├─ DC shift:      0.0240 s (  2.4%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0677 s (  6.7%)
+  ├─ T1 (quant):    0.6527 s ( 64.6%)
+  ├─ Rate alloc:    0.0069 s (  0.7%)
+  └─ T2 (stream):   0.0292 s (  2.9%)
+------------------------------------
+End compress:       0.0107 s (  1.1%)
+====================================
+TOTAL TIME:         1.0104 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1613 s ( 14.3%)
+Setup encoder:      0.0104 s (  0.9%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):      0.9479 s ( 84.1%)
+  ├─ DC shift:      0.0232 s (  2.1%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0415 s (  3.7%)
+  ├─ T1 (quant):    0.7667 s ( 68.0%)
+  ├─ Rate alloc:    0.0046 s (  0.4%)
+  └─ T2 (stream):   0.0243 s (  2.2%)
+------------------------------------
+End compress:       0.0073 s (  0.6%)
+====================================
+TOTAL TIME:         1.1270 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1244 s ( 11.3%)
+Setup encoder:      0.0060 s (  0.5%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.9566 s ( 87.1%)
+  ├─ DC shift:      0.0237 s (  2.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0420 s (  3.8%)
+  ├─ T1 (quant):    0.7690 s ( 70.0%)
+  ├─ Rate alloc:    0.0061 s (  0.6%)
+  └─ T2 (stream):   0.0283 s (  2.6%)
+------------------------------------
+End compress:       0.0107 s (  1.0%)
+====================================
+TOTAL TIME:         1.0977 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1227 s ( 11.3%)
+Setup encoder:      0.0066 s (  0.6%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.9493 s ( 87.4%)
+  ├─ DC shift:      0.0232 s (  2.1%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0425 s (  3.9%)
+  ├─ T1 (quant):    0.7625 s ( 70.2%)
+  ├─ Rate alloc:    0.0046 s (  0.4%)
+  └─ T2 (stream):   0.0248 s (  2.3%)
+------------------------------------
+End compress:       0.0074 s (  0.7%)
+====================================
+TOTAL TIME:         1.0860 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1220 s ( 11.3%)
+Setup encoder:      0.0043 s (  0.4%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):      0.9472 s ( 87.6%)
+  ├─ DC shift:      0.0232 s (  2.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0425 s (  3.9%)
+  ├─ T1 (quant):    0.7659 s ( 70.8%)
+  ├─ Rate alloc:    0.0046 s (  0.4%)
+  └─ T2 (stream):   0.0246 s (  2.3%)
+------------------------------------
+End compress:       0.0074 s (  0.7%)
+====================================
+TOTAL TIME:         1.0810 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: dataset/03.ppm
+Image size: 57813x48438
+====================================
+Load image:        14.0643 s ( 16.4%)
+Setup encoder:      0.0077 s (  0.0%)
+Start compress:     0.0002 s (  0.0%)
+------------------------------------
+Encode (main):     70.2586 s ( 82.1%)
+  ├─ DC shift:      2.8422 s (  3.3%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           9.4920 s ( 11.1%)
+  ├─ T1 (quant):   45.6023 s ( 53.3%)
+  ├─ Rate alloc:    0.5700 s (  0.7%)
+  └─ T2 (stream):   2.9500 s (  3.4%)
+------------------------------------
+End compress:       1.2418 s (  1.5%)
+====================================
+TOTAL TIME:        85.5725 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: dataset/03.ppm
+Image size: 57813x48438
+====================================
+Load image:        13.8431 s ( 29.6%)
+Setup encoder:      0.0145 s (  0.0%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):     32.1235 s ( 68.7%)
+  ├─ DC shift:      2.7310 s (  5.8%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           5.8346 s ( 12.5%)
+  ├─ T1 (quant):   12.9640 s ( 27.7%)
+  ├─ Rate alloc:    0.3892 s (  0.8%)
+  └─ T2 (stream):   1.9530 s (  4.2%)
+------------------------------------
+End compress:       0.7980 s (  1.7%)
+====================================
+TOTAL TIME:        46.7793 s
+====================================
+
+srun: No partition specified, setting to default partition 'ctest'
+srun:  User b12901068 Account ACD114118 wallet has 27514.9123 remaining.
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/sample_5184×3456.ppm
+Image size: 5184x3456
+====================================
+Load image:         0.1943 s (  2.1%)
+Setup encoder:      0.0072 s (  0.1%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):      9.1588 s ( 97.8%)
+  ├─ DC shift:      0.0205 s (  0.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.1583 s (  1.7%)
+  ├─ T1 (quant):    8.8819 s ( 94.8%)
+  ├─ Rate alloc:    0.0033 s (  0.0%)
+  └─ T2 (stream):   0.0189 s (  0.2%)
+------------------------------------
+End compress:       0.0061 s (  0.1%)
+====================================
+TOTAL TIME:         9.3665 s
+====================================
+
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/sample_5184×3456.ppm
+Image size: 5184x3456
+====================================
+Load image:         0.1729 s ( 17.9%)
+Setup encoder:      0.0066 s (  0.7%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):      0.7772 s ( 80.7%)
+  ├─ DC shift:      0.0252 s (  2.6%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.0404 s (  4.2%)
+  ├─ T1 (quant):    0.6065 s ( 63.0%)
+  ├─ Rate alloc:    0.0039 s (  0.4%)
+  └─ T2 (stream):   0.0245 s (  2.5%)
+------------------------------------
+End compress:       0.0067 s (  0.7%)
+====================================
+TOTAL TIME:         0.9635 s
+====================================
+
