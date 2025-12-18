@@ -32,12 +32,14 @@
 // Block dimensions for CUDA kernels
 #define BLOCK_DIM_X 16
 #define BLOCK_DIM_Y 16
+#define SHARED_MEM_SIZE 1024  // Shared memory for faster access
 
 /* ========================================================================
  * CUDA Kernels for 5-3 Transform (Reversible - Integer)
  * ======================================================================== */
 
 // Forward 5-3 horizontal pass: one thread processes one row using temp buffer
+// Optimized with better memory access patterns
 __global__ void dwt53_forward_h_kernel(int* data,
                                        int stride_w,
                                        int rw,
@@ -48,8 +50,24 @@ __global__ void dwt53_forward_h_kernel(int* data,
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= rh) return;
 
-    int* row = data + r * stride_w;
-    int* tmp = tmp_buffer + r * rw;  // Each row gets its own temp buffer
+    // Use shared memory if row fits
+    extern __shared__ int shared_mem[];
+    int* row;
+    int* tmp;
+    bool use_shared = (rw * 2 <= SHARED_MEM_SIZE);
+    
+    if (use_shared) {
+        row = shared_mem;
+        tmp = shared_mem + rw;
+        // Load to shared memory
+        for (int i = 0; i < rw; i++) {
+            row[i] = data[r * stride_w + i];
+        }
+    } else {
+        row = data + r * stride_w;
+        tmp = tmp_buffer + r * rw;
+    }
+    
     int width = rw;
     bool even = (cas_row == 0);
     int sn = (width + (even ? 1 : 0)) >> 1;
@@ -111,6 +129,13 @@ __global__ void dwt53_forward_h_kernel(int* data,
             for (i = 0; i < dn; ++i) {
                 row[sn + i] = tmp[sn + i];
             }
+        }
+    }
+    
+    // Write back from shared memory if used
+    if (use_shared) {
+        for (int i = 0; i < rw; i++) {
+            data[r * stride_w + i] = row[i];
         }
     }
 }
@@ -493,6 +518,10 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         return OPJ_TRUE;
     }
     
+    // Create CUDA stream for async operations
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    
     // Allocate device memory
     int* d_data;
     int* d_tmp;
@@ -501,16 +530,18 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     CUDA_CHECK(cudaMalloc(&d_data, data_size));
     CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
     
-    // Copy data to device
-    CUDA_CHECK(cudaMemcpy(d_data, tilec->data, data_size, cudaMemcpyHostToDevice));
+    // Use async copy to overlap with other operations
+    CUDA_CHECK(cudaMemcpyAsync(d_data, tilec->data, data_size, cudaMemcpyHostToDevice, stream));
     
     // Process each resolution level from high to low as CPU does
     int l = (int)tilec->numresolutions - 1;
     if (l <= 0) {
         // No transform to perform
-        CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         cudaFree(d_tmp);
         cudaFree(d_data);
+        cudaStreamDestroy(stream);
         return OPJ_TRUE;
     }
 
@@ -525,22 +556,24 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         int cas_row = (int)(cur->x0 & 1);
         int cas_col = (int)(cur->y0 & 1);
 
-        // Vertical pass first
+        // Vertical pass first - use larger blocks for better occupancy
         {
-            int threads = 128;
+            int threads = 256;  // Increased from 128
             int blocks = (int)((rw_lvl + threads - 1) / threads);
-            dwt53_forward_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
+            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rh_lvl * 2 * sizeof(int) : 0;
+            dwt53_forward_v_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
+            // Don't sync here - let kernels overlap
         }
 
-        // Horizontal pass
+        // Horizontal pass - sync only after vertical completes
         {
-            int threads = 128;
+            int threads = 256;  // Increased from 128
             int blocks = (int)((rh_lvl + threads - 1) / threads);
-            dwt53_forward_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
+            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rw_lvl * 2 * sizeof(int) : 0;
+            dwt53_forward_h_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
+            // Don't sync between levels - only at the end
         }
 
         // Move down one resolution
@@ -548,12 +581,17 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         prev = prev - 1;
     }
     
-    // Copy result back to host
-    CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+    // Sync once at the end before copying back
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     
-    // Free device memory
+    // Copy result back to host asynchronously
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    
+    // Free device memory and stream
     cudaFree(d_tmp);
     cudaFree(d_data);
+    cudaStreamDestroy(stream);
     
     return OPJ_TRUE;
 }
@@ -583,6 +621,10 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         return OPJ_TRUE;
     }
     
+    // Create CUDA stream for async operations
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    
     // Allocate device memory
     int* d_data;
     int* d_tmp;
@@ -591,8 +633,8 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
     CUDA_CHECK(cudaMalloc(&d_data, data_size));
     CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
     
-    // Copy data to device
-    CUDA_CHECK(cudaMemcpy(d_data, tilec->data, data_size, cudaMemcpyHostToDevice));
+    // Use async copy
+    CUDA_CHECK(cudaMemcpyAsync(d_data, tilec->data, data_size, cudaMemcpyHostToDevice, stream));
     
     // Decode: process from lowest resolution to highest (opposite of encode)
     // Each level reconstructs one higher resolution
@@ -612,29 +654,36 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         
         // Horizontal pass first (opposite of encode)
         if (rw_lvl > 1) {
-            int threads = 128;
+            int threads = 256;  // Increased from 128
             int blocks = (int)((rh_lvl + threads - 1) / threads);
-            dwt53_inverse_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
+            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rw_lvl * 2 * sizeof(int) : 0;
+            dwt53_inverse_h_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
+            // Don't sync - let kernels pipeline
         }
         
         // Vertical pass (opposite of encode)
         if (rh_lvl > 1) {
-            int threads = 128;
+            int threads = 256;  // Increased from 128
             int blocks = (int)((rw_lvl + threads - 1) / threads);
-            dwt53_inverse_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
+            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rh_lvl * 2 * sizeof(int) : 0;
+            dwt53_inverse_v_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
+            // Don't sync between levels
         }
     }
     
-    // Copy result back to host
-    CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+    // Sync once at the end
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     
-    // Free device memory
+    // Copy result back asynchronously
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    
+    // Free device memory and stream
     cudaFree(d_tmp);
     cudaFree(d_data);
+    cudaStreamDestroy(stream);
     
     return OPJ_TRUE;
 }
