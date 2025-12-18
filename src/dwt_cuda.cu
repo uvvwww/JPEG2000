@@ -60,11 +60,6 @@ __global__ void dwt53_forward_h_kernel(int* data,
     int sn = (width + (even ? 1 : 0)) >> 1;
     int dn = width - sn;
 
-    int width = rw;
-    bool even = (cas_row == 0);
-    int sn = (width + (even ? 1 : 0)) >> 1;
-    int dn = width - sn;
-
     if (even) {
         if (width > 1) {
             // Phase 1: predict (high-pass) - vectorized read
@@ -451,6 +446,14 @@ __global__ void dwt97_inverse_v_kernel(float* data, int width, int height,
 
 static int cuda_device_initialized = 0;
 
+// Persistent GPU memory cache to avoid repeated allocations
+static struct {
+    int* d_data;
+    int* d_tmp;
+    size_t allocated_size;
+    cudaStream_t stream;
+} gpu_cache = {NULL, NULL, 0, NULL};
+
 OPJ_BOOL opj_dwt_cuda_init(void)
 {
     if (cuda_device_initialized) {
@@ -472,6 +475,13 @@ OPJ_BOOL opj_dwt_cuda_init(void)
         return OPJ_FALSE;
     }
     
+    // Create persistent stream
+    err = cudaStreamCreate(&gpu_cache.stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Failed to create CUDA stream\n");
+        return OPJ_FALSE;
+    }
+    
     cuda_device_initialized = 1;
     fprintf(stdout, "CUDA DWT initialized (Device 0)\n");
     return OPJ_TRUE;
@@ -480,13 +490,26 @@ OPJ_BOOL opj_dwt_cuda_init(void)
 void opj_dwt_cuda_cleanup(void)
 {
     if (cuda_device_initialized) {
+        if (gpu_cache.d_data) {
+            cudaFree(gpu_cache.d_data);
+            gpu_cache.d_data = NULL;
+        }
+        if (gpu_cache.d_tmp) {
+            cudaFree(gpu_cache.d_tmp);
+            gpu_cache.d_tmp = NULL;
+        }
+        if (gpu_cache.stream) {
+            cudaStreamDestroy(gpu_cache.stream);
+            gpu_cache.stream = NULL;
+        }
+        gpu_cache.allocated_size = 0;
         cudaDeviceReset();
         cuda_device_initialized = 0;
     }
 }
 
 /**
- * Forward 5-3 DWT (CUDA)
+ * Forward 5-3 DWT (CUDA) - Optimized with persistent GPU buffers
  */
 OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
 {
@@ -498,7 +521,6 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         }
     }
     
-    // Get tile dimensions
     OPJ_UINT32 rw = (OPJ_UINT32)(tilec->x1 - tilec->x0);
     OPJ_UINT32 rh = (OPJ_UINT32)(tilec->y1 - tilec->y0);
     
@@ -506,82 +528,62 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         return OPJ_TRUE;
     }
     
-    // Create CUDA stream for async operations
-    cudaStream_t stream;
-    CUDA_CHECK(cudaStreamCreate(&stream));
-    
-    // Allocate device memory
-    int* d_data;
-    int* d_tmp;
     size_t data_size = rw * rh * sizeof(OPJ_INT32);
-    size_t tmp_size = rw * rh * sizeof(OPJ_INT32);  // Max needed for temp buffers
-    CUDA_CHECK(cudaMalloc(&d_data, data_size));
-    CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
+    size_t tmp_size = rw * rh * sizeof(OPJ_INT32);
     
-    // Use async copy to overlap with other operations
-    CUDA_CHECK(cudaMemcpyAsync(d_data, tilec->data, data_size, cudaMemcpyHostToDevice, stream));
-    
-    // Process each resolution level from high to low as CPU does
     int l = (int)tilec->numresolutions - 1;
     if (l <= 0) {
-        // No transform to perform
-        CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        cudaFree(d_tmp);
-        cudaFree(d_data);
-        cudaStreamDestroy(stream);
         return OPJ_TRUE;
     }
-
+    
+    // Reuse or allocate GPU buffers
+    if (gpu_cache.allocated_size < data_size) {
+        if (gpu_cache.d_data) cudaFree(gpu_cache.d_data);
+        if (gpu_cache.d_tmp) cudaFree(gpu_cache.d_tmp);
+        
+        CUDA_CHECK(cudaMalloc(&gpu_cache.d_data, data_size));
+        CUDA_CHECK(cudaMalloc(&gpu_cache.d_tmp, tmp_size));
+        gpu_cache.allocated_size = data_size;
+    }
+    
+    // Async upload
+    CUDA_CHECK(cudaMemcpyAsync(gpu_cache.d_data, tilec->data, data_size, 
+                               cudaMemcpyHostToDevice, gpu_cache.stream));
+    
     opj_tcd_resolution_t* cur = tilec->resolutions + l;
     opj_tcd_resolution_t* prev = cur - 1;
-
+    
+    // Process all resolution levels in stream
     for (int i = l - 1; i >= 0; --i) {
-        OPJ_UINT32 rw_lvl  = (OPJ_UINT32)(cur->x1  - cur->x0);
-        OPJ_UINT32 rh_lvl  = (OPJ_UINT32)(cur->y1  - cur->y0);
-        OPJ_UINT32 rw1_lvl = (OPJ_UINT32)(prev->x1 - prev->x0);
-        OPJ_UINT32 rh1_lvl = (OPJ_UINT32)(prev->y1 - prev->y0);
+        OPJ_UINT32 rw_lvl = (OPJ_UINT32)(cur->x1 - cur->x0);
+        OPJ_UINT32 rh_lvl = (OPJ_UINT32)(cur->y1 - cur->y0);
         int cas_row = (int)(cur->x0 & 1);
         int cas_col = (int)(cur->y0 & 1);
-
-        // Vertical pass first
-        {
-            int threads = 256;
-            int blocks = (int)((rw_lvl + threads - 1) / threads);
-            dwt53_forward_v_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
-            CUDA_CHECK(cudaGetLastError());
-        }
-
+        
+        // Vertical pass
+        int blocks_v = (int)((rw_lvl + 255) / 256);
+        dwt53_forward_v_kernel<<<blocks_v, 256, 0, gpu_cache.stream>>>(
+            gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, gpu_cache.d_tmp);
+        
         // Horizontal pass
-        {
-            int threads = 256;
-            int blocks = (int)((rh_lvl + threads - 1) / threads);
-            dwt53_forward_h_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
-            CUDA_CHECK(cudaGetLastError());
-        }
-
-        // Move down one resolution
+        int blocks_h = (int)((rh_lvl + 255) / 256);
+        dwt53_forward_h_kernel<<<blocks_h, 256, 0, gpu_cache.stream>>>(
+            gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, gpu_cache.d_tmp);
+        
         cur = prev;
         prev = prev - 1;
     }
     
-    // Single sync point at the end
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    
-    // Copy result back to host asynchronously
-    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    
-    // Free device memory and stream
-    cudaFree(d_tmp);
-    cudaFree(d_data);
-    cudaStreamDestroy(stream);
+    // Async download
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, gpu_cache.d_data, data_size, 
+                               cudaMemcpyDeviceToHost, gpu_cache.stream));
+    CUDA_CHECK(cudaStreamSynchronize(gpu_cache.stream));
     
     return OPJ_TRUE;
 }
 
 /**
- * Inverse 5-3 DWT (CUDA)
+ * Inverse 5-3 DWT (CUDA) - Optimized with persistent GPU buffers
  */
 OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UINT32 numres)
 {
@@ -593,35 +595,30 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         }
     }
     
-    // Get tile dimensions
     OPJ_UINT32 rw = (OPJ_UINT32)(tilec->x1 - tilec->x0);
     OPJ_UINT32 rh = (OPJ_UINT32)(tilec->y1 - tilec->y0);
     
-    if (rw == 0 || rh == 0) {
+    if (rw == 0 || rh == 0 || tilec->numresolutions == 1 || numres == 1) {
         return OPJ_TRUE;
     }
     
-    if (tilec->numresolutions == 1 || numres == 1) {
-        return OPJ_TRUE;
-    }
-    
-    // Create CUDA stream for async operations
-    cudaStream_t stream;
-    CUDA_CHECK(cudaStreamCreate(&stream));
-    
-    // Allocate device memory
-    int* d_data;
-    int* d_tmp;
     size_t data_size = rw * rh * sizeof(OPJ_INT32);
     size_t tmp_size = rw * rh * sizeof(OPJ_INT32);
-    CUDA_CHECK(cudaMalloc(&d_data, data_size));
-    CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
     
-    // Use async copy
-    CUDA_CHECK(cudaMemcpyAsync(d_data, tilec->data, data_size, cudaMemcpyHostToDevice, stream));
+    // Reuse or allocate GPU buffers
+    if (gpu_cache.allocated_size < data_size) {
+        if (gpu_cache.d_data) cudaFree(gpu_cache.d_data);
+        if (gpu_cache.d_tmp) cudaFree(gpu_cache.d_tmp);
+        
+        CUDA_CHECK(cudaMalloc(&gpu_cache.d_data, data_size));
+        CUDA_CHECK(cudaMalloc(&gpu_cache.d_tmp, tmp_size));
+        gpu_cache.allocated_size = data_size;
+    }
     
-    // Decode: process from lowest resolution to highest (opposite of encode)
-    // Each level reconstructs one higher resolution
+    // Async upload
+    CUDA_CHECK(cudaMemcpyAsync(gpu_cache.d_data, tilec->data, data_size,
+                               cudaMemcpyHostToDevice, gpu_cache.stream));
+    
     OPJ_UINT32 num_levels = (numres < tilec->numresolutions) ? numres : (tilec->numresolutions - 1);
     
     for (OPJ_UINT32 resno = tilec->numresolutions - num_levels; resno < tilec->numresolutions; ++resno) {
@@ -632,38 +629,25 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         int cas_row = (int)(res->x0 & 1);
         int cas_col = (int)(res->y0 & 1);
         
-        if (rw_lvl <= 1 && rh_lvl <= 1) {
-            continue;
-        }
+        if (rw_lvl <= 1 && rh_lvl <= 1) continue;
         
-        // Horizontal pass first (opposite of encode)
         if (rw_lvl > 1) {
-            int threads = 256;
-            int blocks = (int)((rh_lvl + threads - 1) / threads);
-            dwt53_inverse_h_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
-            CUDA_CHECK(cudaGetLastError());
+            int blocks_h = (int)((rh_lvl + 255) / 256);
+            dwt53_inverse_h_kernel<<<blocks_h, 256, 0, gpu_cache.stream>>>(
+                gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, gpu_cache.d_tmp);
         }
         
-        // Vertical pass (opposite of encode)
         if (rh_lvl > 1) {
-            int threads = 256;
-            int blocks = (int)((rw_lvl + threads - 1) / threads);
-            dwt53_inverse_v_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
-            CUDA_CHECK(cudaGetLastError());
+            int blocks_v = (int)((rw_lvl + 255) / 256);
+            dwt53_inverse_v_kernel<<<blocks_v, 256, 0, gpu_cache.stream>>>(
+                gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, gpu_cache.d_tmp);
         }
     }
     
-    // Single sync point at the end
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    
-    // Copy result back asynchronously
-    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    
-    // Free device memory and stream
-    cudaFree(d_tmp);
-    cudaFree(d_data);
-    cudaStreamDestroy(stream);
+    // Async download
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, gpu_cache.d_data, data_size,
+                               cudaMemcpyDeviceToHost, gpu_cache.stream));
+    CUDA_CHECK(cudaStreamSynchronize(gpu_cache.stream));
     
     return OPJ_TRUE;
 }
