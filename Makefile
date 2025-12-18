@@ -32,7 +32,7 @@ LDFLAGS   += -lm
 # CUDA configuration
 ifeq ($(ENABLE_CUDA),1)
     CXXFLAGS += -DUSE_CUDA_DWT
-    NVCCFLAGS ?= -O3 -std=c++11 -Xcompiler "-fPIC -fopenmp"
+    NVCCFLAGS ?= -O3 -std=c++11 -Xcompiler "-fPIC -fopenmp" -Wno-deprecated-gpu-targets
     NVCCFLAGS += -I$(OPENJP2_DIR) -I$(COMMON_DIR)
     CUDA_LDFLAGS ?= -lcudart
     LDFLAGS += $(CUDA_LDFLAGS)

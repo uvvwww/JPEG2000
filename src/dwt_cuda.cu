@@ -440,26 +440,26 @@ OPJ_BOOL opj_dwt_encode_real_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     
     // Copy int32 data to device as float
     // (Need conversion here)
-    float* h_data_float = (float*)malloc(data_size);
+    float* h_data_float = (float*)opj_malloc(data_size);
     for (size_t i = 0; i < rw * rh; i++) {
         h_data_float[i] = (float)tilec->data[i];
     }
     
     CUDA_CHECK(cudaMemcpy(d_data, h_data_float, data_size, cudaMemcpyHostToDevice));
-    free(h_data_float);
+    opj_free(h_data_float);
     
     // Launch kernels for each resolution
     // (Simplified - full implementation would process all resolutions)
     
     // Copy back and convert to int32
-    h_data_float = (float*)malloc(data_size);
+    h_data_float = (float*)opj_malloc(data_size);
     CUDA_CHECK(cudaMemcpy(h_data_float, d_data, data_size, cudaMemcpyDeviceToHost));
     
     for (size_t i = 0; i < rw * rh; i++) {
         tilec->data[i] = (OPJ_INT32)h_data_float[i];
     }
     
-    free(h_data_float);
+    opj_free(h_data_float);
     cudaFree(d_data);
     
     return OPJ_TRUE;
