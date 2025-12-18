@@ -106,7 +106,7 @@ __global__ void dwt53_forward_h_kernel(int* data,
     if (even) {
         if (width > 1) {
             // Phase 1: predict (high-pass) - vectorized read
-            #pragma unroll DWT_UNROLL_FACTOR
+            #pragma unroll 4
             for (int i = 0; i < sn - 1; ++i) {
                 int s0 = row[2 * i];
                 int s1 = row[2 * (i + 1)];

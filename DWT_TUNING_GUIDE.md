@@ -85,15 +85,18 @@ NVCC_FLAGS += -DDWT_PERSISTENT_BUFFER_LIMIT=0
 **What it controls**: Loop unrolling in lifting kernels  
 **Impact**: Instruction-level parallelism vs register pressure
 
+**NOTE**: Currently not actively used in code (hardcoded to 4 in pragmas). This parameter is reserved for future experimentation. To change unroll factor, you must manually edit the `#pragma unroll 4` directives in [src/dwt_cuda.cu](src/dwt_cuda.cu).
+
 **Recommended values**:
 - `1` - No unrolling
 - `2` - Moderate
-- `4` - **DEFAULT**
+- `4` - **DEFAULT** (hardcoded)
 - `8` - Aggressive (may cause register spill)
 
 **How to change**:
 ```bash
-NVCC_FLAGS += -DDWT_UNROLL_FACTOR=8
+# Currently requires manual code edit (not macro-controlled)
+# Search for "#pragma unroll 4" in dwt_cuda.cu and change to desired value
 ```
 
 **Expected behavior**:
