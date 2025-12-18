@@ -579,14 +579,24 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         return OPJ_TRUE;
     }
     
-    // Reuse or allocate GPU buffers
-    if (gpu_cache.allocated_size < data_size) {
+    // Reuse or allocate GPU buffers (respect size limit)
+    int* d_data_local = gpu_cache.d_data;
+    int* d_tmp_local = gpu_cache.d_tmp;
+    int use_persistent = (DWT_PERSISTENT_BUFFER_LIMIT < 0 || data_size <= (size_t)DWT_PERSISTENT_BUFFER_LIMIT);
+    
+    if (use_persistent && gpu_cache.allocated_size < data_size) {
         if (gpu_cache.d_data) cudaFree(gpu_cache.d_data);
         if (gpu_cache.d_tmp) cudaFree(gpu_cache.d_tmp);
         
         CUDA_CHECK(cudaMalloc(&gpu_cache.d_data, data_size));
         CUDA_CHECK(cudaMalloc(&gpu_cache.d_tmp, tmp_size));
         gpu_cache.allocated_size = data_size;
+        d_data_local = gpu_cache.d_data;
+        d_tmp_local = gpu_cache.d_tmp;
+    } else if (!use_persistent) {
+        // Image too large, use temporary allocation
+        CUDA_CHECK(cudaMalloc(&d_data_local, data_size));
+        CUDA_CHECK(cudaMalloc(&d_tmp_local, tmp_size));
     }
     
     // Upload (async if enabled)
