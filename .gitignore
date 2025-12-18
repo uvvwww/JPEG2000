@@ -65,3 +65,6 @@ slurm-*.err
 # System
 .gitkeep
 EOF
+
+input/
+output/

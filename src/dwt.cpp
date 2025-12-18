@@ -43,6 +43,10 @@
 #define OPJ_SKIP_POISON
 #include "opj_includes.h"
 
+#ifdef USE_CUDA_DWT
+#include "dwt_cuda.h"
+#endif
+
 #ifdef __SSE__
 #include <xmmintrin.h>
 #endif
@@ -2112,6 +2116,13 @@ static INLINE OPJ_BOOL opj_dwt_encode_procedure(opj_thread_pool_t* tp,
 OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
                         opj_tcd_tilecomp_t * tilec)
 {
+#ifdef USE_CUDA_DWT
+    // Try CUDA version first, fall back to CPU if it fails
+    if (opj_dwt_encode_cuda(p_tcd, tilec)) {
+        return OPJ_TRUE;
+    }
+    fprintf(stderr, "CUDA DWT encode failed, falling back to CPU\n");
+#endif
     return opj_dwt_encode_procedure(p_tcd->thread_pool, tilec,
                                     opj_dwt_encode_and_deinterleave_v,
                                     opj_dwt_encode_and_deinterleave_h_one_row);
@@ -2123,6 +2134,13 @@ OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
 OPJ_BOOL opj_dwt_decode(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t* tilec,
                         OPJ_UINT32 numres)
 {
+#ifdef USE_CUDA_DWT
+    // Try CUDA version first, fall back to CPU if it fails
+    if (opj_dwt_decode_cuda(p_tcd, tilec, numres)) {
+        return OPJ_TRUE;
+    }
+    fprintf(stderr, "CUDA DWT decode failed, falling back to CPU\n");
+#endif
     if (p_tcd->whole_tile_decoding) {
         return opj_dwt_decode_tile(p_tcd->thread_pool, tilec, numres);
     } else {
@@ -2152,6 +2170,13 @@ OPJ_FLOAT64 opj_dwt_getnorm(OPJ_UINT32 level, OPJ_UINT32 orient)
 OPJ_BOOL opj_dwt_encode_real(opj_tcd_t *p_tcd,
                              opj_tcd_tilecomp_t * tilec)
 {
+#ifdef USE_CUDA_DWT
+    // Try CUDA version first, fall back to CPU if it fails
+    if (opj_dwt_encode_real_cuda(p_tcd, tilec)) {
+        return OPJ_TRUE;
+    }
+    fprintf(stderr, "CUDA DWT encode_real failed, falling back to CPU\n");
+#endif
     return opj_dwt_encode_procedure(p_tcd->thread_pool, tilec,
                                     opj_dwt_encode_and_deinterleave_v_real,
                                     opj_dwt_encode_and_deinterleave_h_one_row_real);
@@ -3971,6 +3996,13 @@ OPJ_BOOL opj_dwt_decode_real(opj_tcd_t *p_tcd,
                              opj_tcd_tilecomp_t* OPJ_RESTRICT tilec,
                              OPJ_UINT32 numres)
 {
+#ifdef USE_CUDA_DWT
+    // Try CUDA version first, fall back to CPU if it fails
+    if (opj_dwt_decode_real_cuda(p_tcd, tilec, numres)) {
+        return OPJ_TRUE;
+    }
+    fprintf(stderr, "CUDA DWT decode_real failed, falling back to CPU\n");
+#endif
     if (p_tcd->whole_tile_decoding) {
         return opj_dwt_decode_tile_97(p_tcd->thread_pool, tilec, numres);
     } else {

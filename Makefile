@@ -11,6 +11,10 @@ CXX      ?= g++
 MPIXX    ?= mpicxx
 AR       ?= ar
 RANLIB   ?= ranlib
+NVCC     ?= nvcc
+
+# Optional CUDA support (set ENABLE_CUDA=1 to enable)
+ENABLE_CUDA ?= 0
 
 # Optimization flags
 CXXFLAGS  ?= -O3 -march=native -mtune=native
@@ -24,6 +28,15 @@ CXXFLAGS  += -DMUTEX_pthread
 CXXFLAGS  += -fopenmp
 LDFLAGS   += -pthread -fopenmp
 LDFLAGS   += -lm
+
+# CUDA configuration
+ifeq ($(ENABLE_CUDA),1)
+    CXXFLAGS += -DUSE_CUDA_DWT
+    NVCCFLAGS ?= -O3 -std=c++11 -Xcompiler "-fPIC -fopenmp"
+    NVCCFLAGS += -I$(OPENJP2_DIR) -I$(COMMON_DIR)
+    CUDA_LDFLAGS ?= -lcudart
+    LDFLAGS += $(CUDA_LDFLAGS)
+endif
 
 # J2K core + dependencies.
 # Intentionally excluded:
@@ -43,6 +56,11 @@ SOURCES_ALG := \
   $(OPENJP2_DIR)/t2.cpp \
   $(OPENJP2_DIR)/tcd.cpp
 
+# CUDA sources (only compiled if ENABLE_CUDA=1)
+ifeq ($(ENABLE_CUDA),1)
+    SOURCES_CUDA := $(OPENJP2_DIR)/dwt_cuda.cu
+endif
+
 SOURCES_COMMON := \
   $(COMMON_DIR)/openjpeg.cpp \
   $(COMMON_DIR)/bio.cpp \
@@ -61,7 +79,12 @@ SOURCES_COMMON := \
 OBJECTS_ALG := $(patsubst $(OPENJP2_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES_ALG))
 OBJECTS_COMMON := $(patsubst $(COMMON_DIR)/%.cpp,$(BUILD_DIR)/common/%.o,$(SOURCES_COMMON))
 
-OBJECTS := $(OBJECTS_ALG) $(OBJECTS_COMMON)
+ifeq ($(ENABLE_CUDA),1)
+    OBJECTS_CUDA := $(patsubst $(OPENJP2_DIR)/%.cu,$(BUILD_DIR)/%.o,$(SOURCES_CUDA))
+    OBJECTS := $(OBJECTS_ALG) $(OBJECTS_COMMON) $(OBJECTS_CUDA)
+else
+    OBJECTS := $(OBJECTS_ALG) $(OBJECTS_COMMON)
+endif
 TARGET  := $(BUILD_DIR)/libopenjp2_j2k.a
 ENCODER := $(BUILD_DIR)/j2k_encode_pnm
 DECODER := $(BUILD_DIR)/j2k_decode_pnm
@@ -96,6 +119,13 @@ $(BUILD_DIR)/j2k_decode_profile: j2k_decode_profile.cpp $(TARGET)
 $(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# CUDA compilation rule
+ifeq ($(ENABLE_CUDA),1)
+$(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cu
+	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+endif
 
 $(BUILD_DIR)/common/%.o: $(COMMON_DIR)/%.cpp
 	@mkdir -p $(dir $@)
