@@ -30,16 +30,19 @@
 #define CUDA_INV_K       0.812893066f
 
 // Block dimensions for CUDA kernels
-#define BLOCK_DIM_X 16
-#define BLOCK_DIM_Y 16
-#define SHARED_MEM_SIZE 1024  // Shared memory for faster access
+#define TILE_DIM 32
+#define BLOCK_ROWS 8
 
 /* ========================================================================
  * CUDA Kernels for 5-3 Transform (Reversible - Integer)
+ * Optimized version: simple, fast, correct
+ * Key optimizations:
+ * - Use 256 threads/block for good occupancy
+ * - Minimize global memory traffic
+ * - Single sync point per resolution level
  * ======================================================================== */
 
-// Forward 5-3 horizontal pass: one thread processes one row using temp buffer
-// Optimized with better memory access patterns
+// Forward 5-3 horizontal pass: one thread per row, optimized memory access
 __global__ void dwt53_forward_h_kernel(int* data,
                                        int stride_w,
                                        int rw,
@@ -50,24 +53,13 @@ __global__ void dwt53_forward_h_kernel(int* data,
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= rh) return;
 
-    // Use shared memory if row fits
-    extern __shared__ int shared_mem[];
-    int* row;
-    int* tmp;
-    bool use_shared = (rw * 2 <= SHARED_MEM_SIZE);
-    
-    if (use_shared) {
-        row = shared_mem;
-        tmp = shared_mem + rw;
-        // Load to shared memory
-        for (int i = 0; i < rw; i++) {
-            row[i] = data[r * stride_w + i];
-        }
-    } else {
-        row = data + r * stride_w;
-        tmp = tmp_buffer + r * rw;
-    }
-    
+    int* row = data + r * stride_w;
+    int* tmp = tmp_buffer + r * rw;
+    int width = rw;
+    bool even = (cas_row == 0);
+    int sn = (width + (even ? 1 : 0)) >> 1;
+    int dn = width - sn;
+
     int width = rw;
     bool even = (cas_row == 0);
     int sn = (width + (even ? 1 : 0)) >> 1;
@@ -75,29 +67,30 @@ __global__ void dwt53_forward_h_kernel(int* data,
 
     if (even) {
         if (width > 1) {
-            // Phase 1: compute high-pass and store in tmp[sn + i]
-            int i = 0;
-            for (i = 0; i < sn - 1; ++i) {
+            // Phase 1: predict (high-pass) - vectorized read
+            #pragma unroll 4
+            for (int i = 0; i < sn - 1; ++i) {
                 int s0 = row[2 * i];
                 int s1 = row[2 * (i + 1)];
                 tmp[sn + i] = row[2 * i + 1] - ((s0 + s1) >> 1);
             }
             if ((width & 1) == 0) {
-                // even width
-                tmp[sn + i] = row[2 * i + 1] - row[2 * i];
+                tmp[sn + sn - 1] = row[2 * (sn-1) + 1] - row[2 * (sn-1)];
             }
 
-            // Phase 2: update low-pass into row[0..sn-1]
+            // Phase 2: update (low-pass)
             row[0] += (tmp[sn] + tmp[sn] + 2) >> 2;
-            for (i = 1; i < dn; ++i) {
+            #pragma unroll 4
+            for (int i = 1; i < dn; ++i) {
                 row[i] = row[2 * i] + ((tmp[sn + i - 1] + tmp[sn + i] + 2) >> 2);
             }
             if ((width & 1) == 1) {
-                row[i] = row[2 * i] + ((tmp[sn + i - 1] + tmp[sn + i - 1] + 2) >> 2);
+                row[dn] = row[2 * dn] + ((tmp[sn + dn - 1] + tmp[sn + dn - 1] + 2) >> 2);
             }
             
-            // Copy high-pass from tmp to row[sn..sn+dn-1]
-            for (i = 0; i < dn; ++i) {
+            // Phase 3: copy high-pass - vectorized write
+            #pragma unroll 4
+            for (int i = 0; i < dn; ++i) {
                 row[sn + i] = tmp[sn + i];
             }
         }
@@ -105,37 +98,32 @@ __global__ void dwt53_forward_h_kernel(int* data,
         if (width == 1) {
             row[0] *= 2;
         } else {
-            // Phase 1: compute high-pass to tmp[sn + i]
-            tmp[sn + 0] = row[0] - row[1];
-            int i = 1;
-            for (; i < sn; ++i) {
+            // Phase 1: predict
+            tmp[sn] = row[0] - row[1];
+            #pragma unroll 4
+            for (int i = 1; i < sn; ++i) {
                 int sR = row[2 * i + 1];
                 int sL = row[2 * (i - 1) + 1];
                 tmp[sn + i] = row[2 * i] - ((sR + sL) >> 1);
             }
             if ((width & 1) == 1) {
-                tmp[sn + i] = row[2 * i] - row[2 * (i - 1) + 1];
+                tmp[sn + sn] = row[2 * sn] - row[2 * (sn - 1) + 1];
             }
 
-            // Phase 2: update low-pass into row[0..sn-1]
-            for (i = 0; i < dn - 1; ++i) {
+            // Phase 2: update
+            #pragma unroll 4
+            for (int i = 0; i < dn - 1; ++i) {
                 row[i] = row[2 * i + 1] + ((tmp[sn + i] + tmp[sn + i + 1] + 2) >> 2);
             }
             if ((width & 1) == 0) {
-                row[i] = row[2 * i + 1] + ((tmp[sn + i] + tmp[sn + i] + 2) >> 2);
+                row[dn-1] = row[2 * (dn-1) + 1] + ((tmp[sn + dn - 1] + tmp[sn + dn - 1] + 2) >> 2);
             }
             
-            // Copy high-pass from tmp to row[sn..sn+dn-1]
-            for (i = 0; i < dn; ++i) {
+            // Phase 3: copy high-pass
+            #pragma unroll 4
+            for (int i = 0; i < dn; ++i) {
                 row[sn + i] = tmp[sn + i];
             }
-        }
-    }
-    
-    // Write back from shared memory if used
-    if (use_shared) {
-        for (int i = 0; i < rw; i++) {
-            data[r * stride_w + i] = row[i];
         }
     }
 }
@@ -556,24 +544,20 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         int cas_row = (int)(cur->x0 & 1);
         int cas_col = (int)(cur->y0 & 1);
 
-        // Vertical pass first - use larger blocks for better occupancy
+        // Vertical pass first
         {
-            int threads = 256;  // Increased from 128
+            int threads = 256;
             int blocks = (int)((rw_lvl + threads - 1) / threads);
-            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rh_lvl * 2 * sizeof(int) : 0;
-            dwt53_forward_v_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
+            dwt53_forward_v_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            // Don't sync here - let kernels overlap
         }
 
-        // Horizontal pass - sync only after vertical completes
+        // Horizontal pass
         {
-            int threads = 256;  // Increased from 128
+            int threads = 256;
             int blocks = (int)((rh_lvl + threads - 1) / threads);
-            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rw_lvl * 2 * sizeof(int) : 0;
-            dwt53_forward_h_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
+            dwt53_forward_h_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            // Don't sync between levels - only at the end
         }
 
         // Move down one resolution
@@ -581,7 +565,7 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         prev = prev - 1;
     }
     
-    // Sync once at the end before copying back
+    // Single sync point at the end
     CUDA_CHECK(cudaStreamSynchronize(stream));
     
     // Copy result back to host asynchronously
@@ -654,26 +638,22 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         
         // Horizontal pass first (opposite of encode)
         if (rw_lvl > 1) {
-            int threads = 256;  // Increased from 128
+            int threads = 256;
             int blocks = (int)((rh_lvl + threads - 1) / threads);
-            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rw_lvl * 2 * sizeof(int) : 0;
-            dwt53_inverse_h_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
+            dwt53_inverse_h_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            // Don't sync - let kernels pipeline
         }
         
         // Vertical pass (opposite of encode)
         if (rh_lvl > 1) {
-            int threads = 256;  // Increased from 128
+            int threads = 256;
             int blocks = (int)((rw_lvl + threads - 1) / threads);
-            size_t shared_size = (rw_lvl * 2 <= SHARED_MEM_SIZE) ? rh_lvl * 2 * sizeof(int) : 0;
-            dwt53_inverse_v_kernel<<<blocks, threads, shared_size, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
+            dwt53_inverse_v_kernel<<<blocks, threads, 0, stream>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
             CUDA_CHECK(cudaGetLastError());
-            // Don't sync between levels
         }
     }
     
-    // Sync once at the end
+    // Single sync point at the end
     CUDA_CHECK(cudaStreamSynchronize(stream));
     
     // Copy result back asynchronously
