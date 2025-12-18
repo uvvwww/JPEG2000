@@ -37,17 +37,19 @@
  * CUDA Kernels for 5-3 Transform (Reversible - Integer)
  * ======================================================================== */
 
-// Forward 5-3 horizontal pass: one thread processes one row in-place
+// Forward 5-3 horizontal pass: one thread processes one row using temp buffer
 __global__ void dwt53_forward_h_kernel(int* data,
                                        int stride_w,
                                        int rw,
                                        int rh,
-                                       int cas_row)
+                                       int cas_row,
+                                       int* tmp_buffer)
 {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= rh) return;
 
     int* row = data + r * stride_w;
+    int* tmp = tmp_buffer + r * rw;  // Each row gets its own temp buffer
     int width = rw;
     bool even = (cas_row == 0);
     int sn = (width + (even ? 1 : 0)) >> 1;
@@ -55,66 +57,76 @@ __global__ void dwt53_forward_h_kernel(int* data,
 
     if (even) {
         if (width > 1) {
-            // Phase 1: compute high-pass and store at row[sn + i]
+            // Phase 1: compute high-pass and store in tmp[sn + i]
             int i = 0;
             for (i = 0; i < sn - 1; ++i) {
                 int s0 = row[2 * i];
                 int s1 = row[2 * (i + 1)];
-                row[sn + i] = row[2 * i + 1] - ((s0 + s1) >> 1);
+                tmp[sn + i] = row[2 * i + 1] - ((s0 + s1) >> 1);
             }
             if ((width & 1) == 0) {
                 // even width
-                row[sn + i] = row[2 * i + 1] - row[2 * i];
+                tmp[sn + i] = row[2 * i + 1] - row[2 * i];
             }
 
-            // Phase 2: update low-pass into positions [0..sn-1]
-            row[0] += (row[sn] + row[sn] + 2) >> 2;
+            // Phase 2: update low-pass into row[0..sn-1]
+            row[0] += (tmp[sn] + tmp[sn] + 2) >> 2;
             for (i = 1; i < dn; ++i) {
-                row[i] = row[2 * i] + ((row[sn + i - 1] + row[sn + i] + 2) >> 2);
+                row[i] = row[2 * i] + ((tmp[sn + i - 1] + tmp[sn + i] + 2) >> 2);
             }
             if ((width & 1) == 1) {
-                row[i] = row[2 * i] + ((row[sn + i - 1] + row[sn + i - 1] + 2) >> 2);
+                row[i] = row[2 * i] + ((tmp[sn + i - 1] + tmp[sn + i - 1] + 2) >> 2);
             }
-            // High-pass already in place at row+sn
+            
+            // Copy high-pass from tmp to row[sn..sn+dn-1]
+            for (i = 0; i < dn; ++i) {
+                row[sn + i] = tmp[sn + i];
+            }
         }
     } else {
         if (width == 1) {
             row[0] *= 2;
         } else {
-            // Phase 1: compute high-pass to row[sn + i]
-            row[sn + 0] = row[0] - row[1];
+            // Phase 1: compute high-pass to tmp[sn + i]
+            tmp[sn + 0] = row[0] - row[1];
             int i = 1;
             for (; i < sn; ++i) {
                 int sR = row[2 * i + 1];
                 int sL = row[2 * (i - 1) + 1];
-                row[sn + i] = row[2 * i] - ((sR + sL) >> 1);
+                tmp[sn + i] = row[2 * i] - ((sR + sL) >> 1);
             }
             if ((width & 1) == 1) {
-                row[sn + i] = row[2 * i] - row[2 * (i - 1) + 1];
+                tmp[sn + i] = row[2 * i] - row[2 * (i - 1) + 1];
             }
 
-            // Phase 2: update low-pass into positions [0..sn-1]
+            // Phase 2: update low-pass into row[0..sn-1]
             for (i = 0; i < dn - 1; ++i) {
-                row[i] = row[2 * i + 1] + ((row[sn + i] + row[sn + i + 1] + 2) >> 2);
+                row[i] = row[2 * i + 1] + ((tmp[sn + i] + tmp[sn + i + 1] + 2) >> 2);
             }
             if ((width & 1) == 0) {
-                row[i] = row[2 * i + 1] + ((row[sn + i] + row[sn + i] + 2) >> 2);
+                row[i] = row[2 * i + 1] + ((tmp[sn + i] + tmp[sn + i] + 2) >> 2);
             }
-            // High-pass already in place at row+sn
+            
+            // Copy high-pass from tmp to row[sn..sn+dn-1]
+            for (i = 0; i < dn; ++i) {
+                row[sn + i] = tmp[sn + i];
+            }
         }
     }
 }
 
-// Forward 5-3 vertical pass: one thread processes one column in-place
+// Forward 5-3 vertical pass: one thread processes one column using temp buffer
 __global__ void dwt53_forward_v_kernel(int* data,
                                        int stride_w,
                                        int rw,
                                        int rh,
-                                       int cas_col)
+                                       int cas_col,
+                                       int* tmp_buffer)
 {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= rw) return;
 
+    int* tmp = tmp_buffer + c * rh;  // Each column gets its own temp buffer
     bool even = (cas_col == 0);
     int height = rh;
     int sn = (height + (even ? 1 : 0)) >> 1;
@@ -122,68 +134,78 @@ __global__ void dwt53_forward_v_kernel(int* data,
 
     if (even) {
         if (height > 1) {
-            // Phase 1: compute high-pass and store at row index sn + i
+            // Phase 1: compute high-pass and store in tmp[sn + i]
             int i = 0;
             for (i = 0; i < sn - 1; ++i) {
                 int s0 = data[(2 * i) * stride_w + c];
                 int s1 = data[(2 * (i + 1)) * stride_w + c];
                 int oddv = data[(2 * i + 1) * stride_w + c];
-                data[(sn + i) * stride_w + c] = oddv - ((s0 + s1) >> 1);
+                tmp[sn + i] = oddv - ((s0 + s1) >> 1);
             }
             if ((height & 1) == 0) {
                 int oddv = data[(2 * i + 1) * stride_w + c];
                 int s0 = data[(2 * i) * stride_w + c];
-                data[(sn + i) * stride_w + c] = oddv - s0;
+                tmp[sn + i] = oddv - s0;
             }
 
-            // Phase 2: update low-pass into top region
-            int hp0 = data[(sn + 0) * stride_w + c];
+            // Phase 2: update low-pass
+            int hp0 = tmp[sn + 0];
             int s = data[0 * stride_w + c];
             data[0 * stride_w + c] = s + ((hp0 + hp0 + 2) >> 2);
             for (i = 1; i < dn; ++i) {
-                int hpm1 = data[(sn + i - 1) * stride_w + c];
-                int hp = data[(sn + i) * stride_w + c];
+                int hpm1 = tmp[sn + i - 1];
+                int hp = tmp[sn + i];
                 s = data[(2 * i) * stride_w + c];
                 data[i * stride_w + c] = s + ((hpm1 + hp + 2) >> 2);
             }
             if ((height & 1) == 1) {
-                int hpm1 = data[(sn + i - 1) * stride_w + c];
+                int hpm1 = tmp[sn + i - 1];
                 s = data[(2 * i) * stride_w + c];
                 data[i * stride_w + c] = s + ((hpm1 + hpm1 + 2) >> 2);
+            }
+            
+            // Copy high-pass from tmp to data
+            for (i = 0; i < dn; ++i) {
+                data[(sn + i) * stride_w + c] = tmp[sn + i];
             }
         }
     } else {
         if (height == 1) {
             data[0 * stride_w + c] *= 2;
         } else {
-            // Phase 1: compute high-pass
+            // Phase 1: compute high-pass to tmp
             int odd0 = data[0 * stride_w + c];
             int s1 = data[1 * stride_w + c];
-            data[(sn + 0) * stride_w + c] = odd0 - s1;
+            tmp[sn + 0] = odd0 - s1;
             int i = 1;
             for (; i < sn; ++i) {
                 int sR = data[(2 * i + 1) * stride_w + c];
                 int sL = data[(2 * (i - 1) + 1) * stride_w + c];
                 int evenv = data[(2 * i) * stride_w + c];
-                data[(sn + i) * stride_w + c] = evenv - ((sR + sL) >> 1);
+                tmp[sn + i] = evenv - ((sR + sL) >> 1);
             }
             if ((height & 1) == 1) {
                 int evenv = data[(2 * i) * stride_w + c];
                 int sL = data[(2 * (i - 1) + 1) * stride_w + c];
-                data[(sn + i) * stride_w + c] = evenv - sL;
+                tmp[sn + i] = evenv - sL;
             }
 
-            // Phase 2: update low-pass into top region
+            // Phase 2: update low-pass
             for (i = 0; i < dn - 1; ++i) {
-                int hp = data[(sn + i) * stride_w + c];
-                int hp1 = data[(sn + i + 1) * stride_w + c];
+                int hp = tmp[sn + i];
+                int hp1 = tmp[sn + i + 1];
                 int oddv = data[(2 * i + 1) * stride_w + c];
                 data[i * stride_w + c] = oddv + ((hp + hp1 + 2) >> 2);
             }
             if ((height & 1) == 0) {
-                int hp = data[(sn + i) * stride_w + c];
+                int hp = tmp[sn + i];
                 int oddv = data[(2 * i + 1) * stride_w + c];
                 data[i * stride_w + c] = oddv + ((hp + hp + 2) >> 2);
+            }
+            
+            // Copy high-pass from tmp to data
+            for (i = 0; i < dn; ++i) {
+                data[(sn + i) * stride_w + c] = tmp[sn + i];
             }
         }
     }
@@ -319,8 +341,11 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     
     // Allocate device memory
     int* d_data;
+    int* d_tmp;
     size_t data_size = rw * rh * sizeof(OPJ_INT32);
+    size_t tmp_size = rw * rh * sizeof(OPJ_INT32);  // Max needed for temp buffers
     CUDA_CHECK(cudaMalloc(&d_data, data_size));
+    CUDA_CHECK(cudaMalloc(&d_tmp, tmp_size));
     
     // Copy data to device
     CUDA_CHECK(cudaMemcpy(d_data, tilec->data, data_size, cudaMemcpyHostToDevice));
@@ -330,6 +355,7 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     if (l <= 0) {
         // No transform to perform
         CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
+        cudaFree(d_tmp);
         cudaFree(d_data);
         return OPJ_TRUE;
     }
@@ -349,7 +375,7 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         {
             int threads = 128;
             int blocks = (int)((rw_lvl + threads - 1) / threads);
-            dwt53_forward_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col);
+            dwt53_forward_v_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp);
             CUDA_CHECK(cudaGetLastError());
             CUDA_CHECK(cudaDeviceSynchronize());
         }
@@ -358,7 +384,7 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         {
             int threads = 128;
             int blocks = (int)((rh_lvl + threads - 1) / threads);
-            dwt53_forward_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row);
+            dwt53_forward_h_kernel<<<blocks, threads>>>(d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp);
             CUDA_CHECK(cudaGetLastError());
             CUDA_CHECK(cudaDeviceSynchronize());
         }
@@ -372,6 +398,7 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
     CUDA_CHECK(cudaMemcpy(tilec->data, d_data, data_size, cudaMemcpyDeviceToHost));
     
     // Free device memory
+    cudaFree(d_tmp);
     cudaFree(d_data);
     
     return OPJ_TRUE;
