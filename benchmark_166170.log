@@ -1,0 +1,122 @@
+=========================================
+JPEG2000 Multi-core Performance Test
+=========================================
+Node: cpn3545
+Date: Thu Dec 18 00:36:52 CST 2025
+Input: input/photo2590.ppm (6016x4000)
+
+=========================================
+Testing with 1 threads
+=========================================
+Using 1 threads for encoding
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1330 s (  1.1%)
+Setup encoder:      0.0005 s (  0.0%)
+Start compress:     0.0001 s (  0.0%)
+------------------------------------
+Encode (main):     11.4661 s ( 98.8%)
+  ├─ DC shift:      0.0260 s (  0.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.2788 s (  2.4%)
+  ├─ T1 (quant):   11.0291 s ( 95.0%)
+  ├─ Rate alloc:    0.0074 s (  0.1%)
+  └─ T2 (stream):   0.0283 s (  0.2%)
+------------------------------------
+End compress:       0.0090 s (  0.1%)
+====================================
+TOTAL TIME:        11.6088 s
+====================================
+
+Profiling results saved to: profiling_results.txt
+
+=========================================
+Testing with 2 threads
+=========================================
+Using 2 threads for encoding
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1335 s (  1.1%)
+Setup encoder:      0.0006 s (  0.0%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):     11.8894 s ( 98.8%)
+  ├─ DC shift:      0.0259 s (  0.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.3014 s (  2.5%)
+  ├─ T1 (quant):   11.4317 s ( 95.0%)
+  ├─ Rate alloc:    0.0074 s (  0.1%)
+  └─ T2 (stream):   0.0275 s (  0.2%)
+------------------------------------
+End compress:       0.0082 s (  0.1%)
+====================================
+TOTAL TIME:        12.0316 s
+====================================
+
+Profiling results saved to: profiling_results.txt
+
+=========================================
+Testing with 4 threads
+=========================================
+Using 4 threads for encoding
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1332 s (  1.1%)
+Setup encoder:      0.0013 s (  0.0%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):     12.3209 s ( 98.8%)
+  ├─ DC shift:      0.0250 s (  0.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.3221 s (  2.6%)
+  ├─ T1 (quant):   11.8451 s ( 95.0%)
+  ├─ Rate alloc:    0.0071 s (  0.1%)
+  └─ T2 (stream):   0.0289 s (  0.2%)
+------------------------------------
+End compress:       0.0089 s (  0.1%)
+====================================
+TOTAL TIME:        12.4643 s
+====================================
+
+Profiling results saved to: profiling_results.txt
+
+=========================================
+Testing with 8 threads
+=========================================
+Using 8 threads for encoding
+
+=== ENCODING PROFILING RESULTS ===
+Input file: input/photo2590.ppm
+Image size: 6016x4000
+====================================
+Load image:         0.1336 s (  1.0%)
+Setup encoder:      0.0017 s (  0.0%)
+Start compress:     0.0000 s (  0.0%)
+------------------------------------
+Encode (main):     13.1819 s ( 98.9%)
+  ├─ DC shift:      0.0279 s (  0.2%)
+  ├─ MCT:           0.0000 s (  0.0%)
+  ├─ DWT:           0.3584 s (  2.7%)
+  ├─ T1 (quant):   12.6676 s ( 95.1%)
+  ├─ Rate alloc:    0.0054 s (  0.0%)
+  └─ T2 (stream):   0.0285 s (  0.2%)
+------------------------------------
+End compress:       0.0082 s (  0.1%)
+====================================
+TOTAL TIME:        13.3256 s
+====================================
+
+Profiling results saved to: profiling_results.txt
+
+=========================================
+Benchmark completed at Thu Dec 18 00:37:15 CST 2025
+=========================================

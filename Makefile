@@ -8,16 +8,21 @@ COMMON_DIR  := src/common
 BUILD_DIR   := build
 
 CXX      ?= g++
+MPIXX    ?= mpicxx
 AR       ?= ar
 RANLIB   ?= ranlib
 
-CXXFLAGS  ?= -O2 -g
+# Optimization flags
+CXXFLAGS  ?= -O3 -march=native -mtune=native
+CXXFLAGS  += -ffast-math -funroll-loops -finline-functions
 CXXFLAGS  += -std=c++11 -fPIC -Wall -Wextra -fpermissive
 CXXFLAGS  += -I$(OPENJP2_DIR) -I$(COMMON_DIR)
 CXXFLAGS  += -DOPJ_STATIC
 # Thread backend (WSL/Linux)
 CXXFLAGS  += -DMUTEX_pthread
-LDFLAGS   += -pthread
+# OpenMP support
+CXXFLAGS  += -fopenmp
+LDFLAGS   += -pthread -fopenmp
 LDFLAGS   += -lm
 
 # J2K core + dependencies.
@@ -65,6 +70,10 @@ DECODER := $(BUILD_DIR)/j2k_decode_pnm
 
 all: $(TARGET) $(ENCODER) $(DECODER)
 
+# Optional MPI version
+mpi: $(BUILD_DIR)/j2k_encode_mpi
+	@echo "MPI encoder built: $(BUILD_DIR)/j2k_encode_mpi"
+
 $(TARGET): $(OBJECTS)
 	$(AR) rcs $@ $^
 	$(RANLIB) $@
@@ -73,6 +82,12 @@ $(ENCODER): $(BUILD_DIR)/j2k_encode_pnm.o $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
 $(DECODER): $(BUILD_DIR)/j2k_decode_pnm.o $(TARGET)
+	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_encode_mpi: j2k_encode_mpi.cpp $(TARGET)
+	$(MPIXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_encode_profile: j2k_encode_profile.cpp $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cpp

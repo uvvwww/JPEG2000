@@ -41,8 +41,11 @@
 
 #include "opj_includes.h"
 #include "opj_common.h"
+#include "../profile_times.h"
 
 // #define DEBUG_RATE_ALLOC
+
+struct TimingData global_timing = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
 /* ----------------------------------------------------------------------- */
 
@@ -1490,37 +1493,37 @@ OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd,
         }
         /* << INDEX */
 
-        /* FIXME _ProfStart(PGROUP_DC_SHIFT); */
+        PROF_START(dc_shift);
         /*---------------TILE-------------------*/
         if (! opj_tcd_dc_level_shift_encode(p_tcd)) {
             return OPJ_FALSE;
         }
-        /* FIXME _ProfStop(PGROUP_DC_SHIFT); */
+        PROF_STOP(dc_shift, dc_shift_time);
 
-        /* FIXME _ProfStart(PGROUP_MCT); */
+        PROF_START(mct);
         if (! opj_tcd_mct_encode(p_tcd)) {
             return OPJ_FALSE;
         }
-        /* FIXME _ProfStop(PGROUP_MCT); */
+        PROF_STOP(mct, mct_time);
 
-        /* FIXME _ProfStart(PGROUP_DWT); */
+        PROF_START(dwt);
         if (! opj_tcd_dwt_encode(p_tcd)) {
             return OPJ_FALSE;
         }
-        /* FIXME  _ProfStop(PGROUP_DWT); */
+        PROF_STOP(dwt, dwt_time);
 
-        /* FIXME  _ProfStart(PGROUP_T1); */
+        PROF_START(t1);
         if (! opj_tcd_t1_encode(p_tcd)) {
             return OPJ_FALSE;
         }
-        /* FIXME _ProfStop(PGROUP_T1); */
+        PROF_STOP(t1, t1_time);
 
-        /* FIXME _ProfStart(PGROUP_RATE); */
+        PROF_START(rate);
         if (! opj_tcd_rate_allocate_encode(p_tcd, p_dest, p_max_length,
                                            p_cstr_info, p_manager)) {
             return OPJ_FALSE;
         }
-        /* FIXME _ProfStop(PGROUP_RATE); */
+        PROF_STOP(rate, rate_time);
 
     }
     /*--------------TIER2------------------*/
@@ -1529,13 +1532,13 @@ OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd,
     if (p_cstr_info) {
         p_cstr_info->index_write = 1;
     }
-    /* FIXME _ProfStart(PGROUP_T2); */
+    PROF_START(t2);
 
     if (! opj_tcd_t2_encode(p_tcd, p_dest, p_data_written, p_max_length,
                             p_cstr_info, p_marker_info, p_manager)) {
         return OPJ_FALSE;
     }
-    /* FIXME _ProfStop(PGROUP_T2); */
+    PROF_STOP(t2, t2_time);
 
     /*---------------CLEAN-------------------*/
 

@@ -4,6 +4,9 @@
 
 #include "openjpeg.h"
 
+/* Declare internal timing function from OpenJPEG */
+extern double opj_clock(void);
+
 static void error_callback(const char* msg, void* client_data) {
     (void)client_data;
     fputs(msg, stderr);
@@ -150,6 +153,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    double t_start = opj_clock();
+
     if (!opj_decode(codec, stream, image)) {
         fprintf(stderr, "opj_decode failed\n");
         opj_image_destroy(image);
@@ -165,6 +170,9 @@ int main(int argc, char** argv) {
         opj_destroy_codec(codec);
         return 1;
     }
+
+    double t_end = opj_clock();
+    fprintf(stdout, "Decoding time: %f seconds\n", t_end - t_start);
 
     int ok = write_pnm_u8(out_path, image);
     if (!ok) {

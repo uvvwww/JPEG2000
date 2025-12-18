@@ -192,8 +192,8 @@ int main(int argc, char** argv) {
     parameters.tcp_numlayers = 1;
     parameters.cp_disto_alloc = 1;
     
-    /* Prevent "Number of resolutions is too high" error for small images */
-    parameters.numresolution = 1;
+    /* Use standard JPEG2000 settings: 6 resolution levels (5 DWT decompositions) */
+    parameters.numresolution = 6;
 
     opj_codec_t* codec = opj_create_compress(OPJ_CODEC_J2K);
     if (!codec) {
@@ -204,6 +204,20 @@ int main(int argc, char** argv) {
     opj_set_error_handler(codec, error_callback, NULL);
     opj_set_warning_handler(codec, warning_callback, NULL);
     opj_set_info_handler(codec, info_callback, NULL);
+
+    // Set number of threads for parallel encoding
+    int num_threads = 4; // Default to 4 threads
+    const char* env_threads = getenv("OMP_NUM_THREADS");
+    if (env_threads) {
+        num_threads = atoi(env_threads);
+    }
+    if (num_threads > 0) {
+        if (!opj_codec_set_threads(codec, num_threads)) {
+            fprintf(stderr, "Warning: Failed to set %d threads\n", num_threads);
+        } else {
+            fprintf(stdout, "Using %d threads for encoding\n", num_threads);
+        }
+    }
 
     opj_stream_t* stream = opj_stream_create_default_file_stream(out_path, OPJ_FALSE);
     if (!stream) {
