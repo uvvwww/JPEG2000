@@ -90,6 +90,9 @@ $(BUILD_DIR)/j2k_encode_mpi: j2k_encode_mpi.cpp $(TARGET)
 $(BUILD_DIR)/j2k_encode_profile: j2k_encode_profile.cpp $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
+$(BUILD_DIR)/j2k_decode_profile: j2k_decode_profile.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
