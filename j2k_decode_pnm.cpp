@@ -3,9 +3,25 @@
 #include <string.h>
 
 #include "openjpeg.h"
+#include "profile_times.h"
 
 /* Declare internal timing function from OpenJPEG */
 extern double opj_clock(void);
+
+/* External timing data from tcd.cpp */
+extern struct TimingData global_timing;
+
+// Profiling structure
+typedef struct {
+    double total_time;
+    double setup_time;
+    double read_header_time;
+    double decode_time;
+    double end_decompress_time;
+    double write_time;
+} decode_profile_times_t;
+
+static decode_profile_times_t prof_times = {};
 
 static void error_callback(const char* msg, void* client_data) {
     (void)client_data;
@@ -135,9 +151,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    double total_start = opj_clock();
+
     const char* in_path = argv[1];
     const char* out_path = argv[2];
 
+    double t_start, t_end;
+    
+    t_start = opj_clock();
     opj_dparameters_t parameters;
     opj_set_default_decoder_parameters(&parameters);
 
@@ -149,6 +170,20 @@ int main(int argc, char** argv) {
     opj_set_error_handler(codec, error_callback, NULL);
     opj_set_warning_handler(codec, warning_callback, NULL);
     opj_set_info_handler(codec, info_callback, NULL);
+
+    // Set number of threads for parallel decoding
+    int num_threads = 32; // Default to 32 threads
+    const char* env_threads = getenv("OMP_NUM_THREADS");
+    if (env_threads) {
+        num_threads = atoi(env_threads);
+    }
+    if (num_threads > 0) {
+        if (!opj_codec_set_threads(codec, num_threads)) {
+            fprintf(stderr, "Warning: Failed to set %d threads\n", num_threads);
+        } else {
+            fprintf(stdout, "Using %d threads for decoding\n", num_threads);
+        }
+    }
 
     opj_stream_t* stream = opj_stream_create_default_file_stream(in_path, OPJ_TRUE);
     if (!stream) {
@@ -162,7 +197,10 @@ int main(int argc, char** argv) {
         opj_destroy_codec(codec);
         return 1;
     }
+    t_end = opj_clock();
+    prof_times.setup_time = t_end - t_start;
 
+    t_start = opj_clock();
     opj_image_t* image = NULL;
     if (!opj_read_header(stream, codec, &image)) {
         fprintf(stderr, "opj_read_header failed\n");
@@ -170,9 +208,10 @@ int main(int argc, char** argv) {
         opj_destroy_codec(codec);
         return 1;
     }
+    t_end = opj_clock();
+    prof_times.read_header_time = t_end - t_start;
 
-    double t_start = opj_clock();
-
+    t_start = opj_clock();
     if (!opj_decode(codec, stream, image)) {
         fprintf(stderr, "opj_decode failed\n");
         opj_image_destroy(image);
@@ -180,7 +219,10 @@ int main(int argc, char** argv) {
         opj_destroy_codec(codec);
         return 1;
     }
+    t_end = opj_clock();
+    prof_times.decode_time = t_end - t_start;
 
+    t_start = opj_clock();
     if (!opj_end_decompress(codec, stream)) {
         fprintf(stderr, "opj_end_decompress failed\n");
         opj_image_destroy(image);
@@ -188,14 +230,60 @@ int main(int argc, char** argv) {
         opj_destroy_codec(codec);
         return 1;
     }
+    t_end = opj_clock();
+    prof_times.end_decompress_time = t_end - t_start;
 
-    double t_end = opj_clock();
-    fprintf(stdout, "Decoding time: %f seconds\n", t_end - t_start);
-
+    t_start = opj_clock();
     int ok = write_pnm_u8(out_path, image);
     if (!ok) {
         fprintf(stderr, "Failed to write output PNM\n");
     }
+    t_end = opj_clock();
+    prof_times.write_time = t_end - t_start;
+    
+    double total_end = opj_clock();
+    prof_times.total_time = total_end - total_start;
+
+    // Print profiling results
+    fprintf(stdout, "\n=== DECODING PROFILING RESULTS ===\n");
+    fprintf(stdout, "Input file: %s\n", in_path);
+    fprintf(stdout, "Image size: %dx%d\n", image->x1 - image->x0, image->y1 - image->y0);
+    fprintf(stdout, "====================================\n");
+    fprintf(stdout, "Setup decoder:    %8.4f s (%5.1f%%)\n", 
+           prof_times.setup_time,
+           100.0 * prof_times.setup_time / prof_times.total_time);
+    fprintf(stdout, "Read header:      %8.4f s (%5.1f%%)\n", 
+           prof_times.read_header_time,
+           100.0 * prof_times.read_header_time / prof_times.total_time);
+    fprintf(stdout, "------------------------------------\n");
+    fprintf(stdout, "Decode (main):    %8.4f s (%5.1f%%)\n", 
+           prof_times.decode_time,
+           100.0 * prof_times.decode_time / prof_times.total_time);
+    fprintf(stdout, "  ├─ DWT:         %8.4f s (%5.1f%%)\n",
+           global_timing.dwt_time,
+           100.0 * global_timing.dwt_time / prof_times.total_time);
+    fprintf(stdout, "  ├─ T1 (dequant):%8.4f s (%5.1f%%)\n",
+           global_timing.t1_time,
+           100.0 * global_timing.t1_time / prof_times.total_time);
+    fprintf(stdout, "  ├─ T2 (stream): %8.4f s (%5.1f%%)\n",
+           global_timing.t2_time,
+           100.0 * global_timing.t2_time / prof_times.total_time);
+    fprintf(stdout, "  └─ MCT:         %8.4f s (%5.1f%%)\n",
+           global_timing.mct_time,
+           100.0 * global_timing.mct_time / prof_times.total_time);
+    fprintf(stdout, "------------------------------------\n");
+    fprintf(stdout, "End decompress:   %8.4f s (%5.1f%%)\n", 
+           prof_times.end_decompress_time,
+           100.0 * prof_times.end_decompress_time / prof_times.total_time);
+    fprintf(stdout, "Write image:      %8.4f s (%5.1f%%)\n", 
+           prof_times.write_time,
+           100.0 * prof_times.write_time / prof_times.total_time);
+    fprintf(stdout, "====================================\n");
+    fprintf(stdout, "TOTAL TIME:       %8.4f s\n", prof_times.total_time);
+    fprintf(stdout, "====================================\n\n");
+
+    fprintf(stdout, "TOTAL TIME:       %8.4f s\n", prof_times.total_time);
+    fprintf(stdout, "====================================\n\n");
 
     opj_image_destroy(image);
     opj_stream_destroy(stream);

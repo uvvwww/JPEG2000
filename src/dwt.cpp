@@ -2118,8 +2118,10 @@ OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
 {
 #ifdef USE_CUDA_DWT
     if (opj_dwt_encode_cuda(p_tcd, tilec)) {
+        fprintf(stdout, "[DWT] Using CUDA for encoding\n");
         return OPJ_TRUE;
     }
+    fprintf(stderr, "[DWT] CUDA encode failed, falling back to CPU\n");
 #endif
     return opj_dwt_encode_procedure(p_tcd->thread_pool, tilec,
                                     opj_dwt_encode_and_deinterleave_v,
@@ -2134,8 +2136,10 @@ OPJ_BOOL opj_dwt_decode(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t* tilec,
 {
 #ifdef USE_CUDA_DWT
     if (opj_dwt_decode_cuda(p_tcd, tilec, numres)) {
+        fprintf(stdout, "[DWT] Using CUDA for decoding\n");
         return OPJ_TRUE;
     }
+    fprintf(stderr, "[DWT] CUDA decode failed, falling back to CPU\n");
     // Fall back to CPU if CUDA fails
 #endif
     if (p_tcd->whole_tile_decoding) {
