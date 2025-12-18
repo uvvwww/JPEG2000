@@ -30,7 +30,7 @@
 // Recommended values: 64, 128, 256, 512, 1024
 // Current optimal: 256 (good balance for most GPUs)
 #ifndef DWT_THREADS_PER_BLOCK
-#define DWT_THREADS_PER_BLOCK 256
+#define DWT_THREADS_PER_BLOCK 128
 #endif
 
 // Enable/disable async memory transfers
