@@ -2116,13 +2116,6 @@ static INLINE OPJ_BOOL opj_dwt_encode_procedure(opj_thread_pool_t* tp,
 OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
                         opj_tcd_tilecomp_t * tilec)
 {
-#ifdef USE_CUDA_DWT
-    // Try CUDA version first, fall back to CPU if it fails
-    if (opj_dwt_encode_cuda(p_tcd, tilec)) {
-        return OPJ_TRUE;
-    }
-    fprintf(stderr, "CUDA DWT encode failed, falling back to CPU\n");
-#endif
     return opj_dwt_encode_procedure(p_tcd->thread_pool, tilec,
                                     opj_dwt_encode_and_deinterleave_v,
                                     opj_dwt_encode_and_deinterleave_h_one_row);
@@ -2134,13 +2127,6 @@ OPJ_BOOL opj_dwt_encode(opj_tcd_t *p_tcd,
 OPJ_BOOL opj_dwt_decode(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t* tilec,
                         OPJ_UINT32 numres)
 {
-#ifdef USE_CUDA_DWT
-    // Try CUDA version first, fall back to CPU if it fails
-    if (opj_dwt_decode_cuda(p_tcd, tilec, numres)) {
-        return OPJ_TRUE;
-    }
-    fprintf(stderr, "CUDA DWT decode failed, falling back to CPU\n");
-#endif
     if (p_tcd->whole_tile_decoding) {
         return opj_dwt_decode_tile(p_tcd->thread_pool, tilec, numres);
     } else {
