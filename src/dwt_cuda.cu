@@ -21,6 +21,49 @@
         } \
     } while(0)
 
+// ============================================================================
+// TUNABLE PARAMETERS FOR EXPERIMENTATION
+// ============================================================================
+
+// Thread block size: Number of threads per block
+// Affects GPU occupancy and shared memory usage
+// Recommended values: 64, 128, 256, 512, 1024
+// Current optimal: 256 (good balance for most GPUs)
+#ifndef DWT_THREADS_PER_BLOCK
+#define DWT_THREADS_PER_BLOCK 256
+#endif
+
+// Enable/disable async memory transfers
+// 1 = Use cudaMemcpyAsync (overlap transfers with compute)
+// 0 = Use cudaMemcpy (synchronous, easier to debug)
+#ifndef DWT_USE_ASYNC_MEMCPY
+#define DWT_USE_ASYNC_MEMCPY 1
+#endif
+
+// Persistent GPU buffer threshold (bytes)
+// Buffers larger than this will NOT be cached
+// Set to 0 to disable caching, -1 for unlimited
+// Default: 512MB to avoid consuming all GPU memory
+#ifndef DWT_PERSISTENT_BUFFER_LIMIT
+#define DWT_PERSISTENT_BUFFER_LIMIT (512 * 1024 * 1024)
+#endif
+
+// Loop unrolling factor in kernels
+// Higher values may improve performance but increase register pressure
+// Recommended: 2, 4, 8
+#ifndef DWT_UNROLL_FACTOR
+#define DWT_UNROLL_FACTOR 4
+#endif
+
+// Enable kernel launch profiling prints
+// 1 = Print kernel dimensions and timing info
+// 0 = Silent operation (faster)
+#ifndef DWT_DEBUG_PRINT
+#define DWT_DEBUG_PRINT 0
+#endif
+
+// ============================================================================
+
 // Wavelet filter coefficients for 9-7 transform (from dwt.cpp)
 #define CUDA_DWT_ALPHA  -1.586134342f
 #define CUDA_DWT_BETA   -0.052980118f
@@ -29,7 +72,7 @@
 #define CUDA_K           1.230174105f
 #define CUDA_INV_K       0.812893066f
 
-// Block dimensions for CUDA kernels
+// Legacy tile dimensions (for 9-7 shared memory kernels)
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
 
@@ -63,7 +106,7 @@ __global__ void dwt53_forward_h_kernel(int* data,
     if (even) {
         if (width > 1) {
             // Phase 1: predict (high-pass) - vectorized read
-            #pragma unroll 4
+            #pragma unroll DWT_UNROLL_FACTOR
             for (int i = 0; i < sn - 1; ++i) {
                 int s0 = row[2 * i];
                 int s1 = row[2 * (i + 1)];
@@ -546,9 +589,13 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         gpu_cache.allocated_size = data_size;
     }
     
-    // Async upload
-    CUDA_CHECK(cudaMemcpyAsync(gpu_cache.d_data, tilec->data, data_size, 
+    // Upload (async if enabled)
+#if DWT_USE_ASYNC_MEMCPY
+    CUDA_CHECK(cudaMemcpyAsync(d_data_local, tilec->data, data_size, 
                                cudaMemcpyHostToDevice, gpu_cache.stream));
+#else
+    CUDA_CHECK(cudaMemcpy(d_data_local, tilec->data, data_size, cudaMemcpyHostToDevice));
+#endif
     
     opj_tcd_resolution_t* cur = tilec->resolutions + l;
     opj_tcd_resolution_t* prev = cur - 1;
@@ -561,23 +608,40 @@ OPJ_BOOL opj_dwt_encode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec)
         int cas_col = (int)(cur->y0 & 1);
         
         // Vertical pass
-        int blocks_v = (int)((rw_lvl + 255) / 256);
-        dwt53_forward_v_kernel<<<blocks_v, 256, 0, gpu_cache.stream>>>(
-            gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, gpu_cache.d_tmp);
+        int blocks_v = (int)((rw_lvl + DWT_THREADS_PER_BLOCK - 1) / DWT_THREADS_PER_BLOCK);
+#if DWT_DEBUG_PRINT
+        printf("[DWT] Level %d: V-pass blocks=%d threads=%d\n", i, blocks_v, DWT_THREADS_PER_BLOCK);
+#endif
+        dwt53_forward_v_kernel<<<blocks_v, DWT_THREADS_PER_BLOCK, 0, gpu_cache.stream>>>(
+            d_data_local, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp_local);
         
         // Horizontal pass
-        int blocks_h = (int)((rh_lvl + 255) / 256);
-        dwt53_forward_h_kernel<<<blocks_h, 256, 0, gpu_cache.stream>>>(
-            gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, gpu_cache.d_tmp);
+        int blocks_h = (int)((rh_lvl + DWT_THREADS_PER_BLOCK - 1) / DWT_THREADS_PER_BLOCK);
+#if DWT_DEBUG_PRINT
+        printf("[DWT] Level %d: H-pass blocks=%d threads=%d\n", i, blocks_h, DWT_THREADS_PER_BLOCK);
+#endif
+        dwt53_forward_h_kernel<<<blocks_h, DWT_THREADS_PER_BLOCK, 0, gpu_cache.stream>>>(
+            d_data_local, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp_local);
         
         cur = prev;
         prev = prev - 1;
     }
     
-    // Async download
-    CUDA_CHECK(cudaMemcpyAsync(tilec->data, gpu_cache.d_data, data_size, 
+    // Download (async if enabled)
+#if DWT_USE_ASYNC_MEMCPY
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data_local, data_size, 
                                cudaMemcpyDeviceToHost, gpu_cache.stream));
     CUDA_CHECK(cudaStreamSynchronize(gpu_cache.stream));
+#else
+    CUDA_CHECK(cudaMemcpy(tilec->data, d_data_local, data_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+    
+    // Free temporary buffers if not using persistent cache
+    if (!use_persistent) {
+        cudaFree(d_tmp_local);
+        cudaFree(d_data_local);
+    }
     
     return OPJ_TRUE;
 }
@@ -605,19 +669,33 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
     size_t data_size = rw * rh * sizeof(OPJ_INT32);
     size_t tmp_size = rw * rh * sizeof(OPJ_INT32);
     
-    // Reuse or allocate GPU buffers
-    if (gpu_cache.allocated_size < data_size) {
+    // Reuse or allocate GPU buffers (respect size limit)
+    int* d_data_local = gpu_cache.d_data;
+    int* d_tmp_local = gpu_cache.d_tmp;
+    int use_persistent = (DWT_PERSISTENT_BUFFER_LIMIT < 0 || data_size <= (size_t)DWT_PERSISTENT_BUFFER_LIMIT);
+    
+    if (use_persistent && gpu_cache.allocated_size < data_size) {
         if (gpu_cache.d_data) cudaFree(gpu_cache.d_data);
         if (gpu_cache.d_tmp) cudaFree(gpu_cache.d_tmp);
         
         CUDA_CHECK(cudaMalloc(&gpu_cache.d_data, data_size));
         CUDA_CHECK(cudaMalloc(&gpu_cache.d_tmp, tmp_size));
         gpu_cache.allocated_size = data_size;
+        d_data_local = gpu_cache.d_data;
+        d_tmp_local = gpu_cache.d_tmp;
+    } else if (!use_persistent) {
+        // Image too large, use temporary allocation
+        CUDA_CHECK(cudaMalloc(&d_data_local, data_size));
+        CUDA_CHECK(cudaMalloc(&d_tmp_local, tmp_size));
     }
     
-    // Async upload
-    CUDA_CHECK(cudaMemcpyAsync(gpu_cache.d_data, tilec->data, data_size,
+    // Upload (async if enabled)
+#if DWT_USE_ASYNC_MEMCPY
+    CUDA_CHECK(cudaMemcpyAsync(d_data_local, tilec->data, data_size,
                                cudaMemcpyHostToDevice, gpu_cache.stream));
+#else
+    CUDA_CHECK(cudaMemcpy(d_data_local, tilec->data, data_size, cudaMemcpyHostToDevice));
+#endif
     
     OPJ_UINT32 num_levels = (numres < tilec->numresolutions) ? numres : (tilec->numresolutions - 1);
     
@@ -632,22 +710,39 @@ OPJ_BOOL opj_dwt_decode_cuda(opj_tcd_t *p_tcd, opj_tcd_tilecomp_t *tilec, OPJ_UI
         if (rw_lvl <= 1 && rh_lvl <= 1) continue;
         
         if (rw_lvl > 1) {
-            int blocks_h = (int)((rh_lvl + 255) / 256);
-            dwt53_inverse_h_kernel<<<blocks_h, 256, 0, gpu_cache.stream>>>(
-                gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, gpu_cache.d_tmp);
+            int blocks_h = (int)((rh_lvl + DWT_THREADS_PER_BLOCK - 1) / DWT_THREADS_PER_BLOCK);
+#if DWT_DEBUG_PRINT
+            printf("[DWT] Decode res=%u: H-pass blocks=%d threads=%d\n", resno, blocks_h, DWT_THREADS_PER_BLOCK);
+#endif
+            dwt53_inverse_h_kernel<<<blocks_h, DWT_THREADS_PER_BLOCK, 0, gpu_cache.stream>>>(
+                d_data_local, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_row, d_tmp_local);
         }
         
         if (rh_lvl > 1) {
-            int blocks_v = (int)((rw_lvl + 255) / 256);
-            dwt53_inverse_v_kernel<<<blocks_v, 256, 0, gpu_cache.stream>>>(
-                gpu_cache.d_data, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, gpu_cache.d_tmp);
+            int blocks_v = (int)((rw_lvl + DWT_THREADS_PER_BLOCK - 1) / DWT_THREADS_PER_BLOCK);
+#if DWT_DEBUG_PRINT
+            printf("[DWT] Decode res=%u: V-pass blocks=%d threads=%d\n", resno, blocks_v, DWT_THREADS_PER_BLOCK);
+#endif
+            dwt53_inverse_v_kernel<<<blocks_v, DWT_THREADS_PER_BLOCK, 0, gpu_cache.stream>>>(
+                d_data_local, (int)rw, (int)rw_lvl, (int)rh_lvl, cas_col, d_tmp_local);
         }
     }
     
-    // Async download
-    CUDA_CHECK(cudaMemcpyAsync(tilec->data, gpu_cache.d_data, data_size,
+    // Download (async if enabled)
+#if DWT_USE_ASYNC_MEMCPY
+    CUDA_CHECK(cudaMemcpyAsync(tilec->data, d_data_local, data_size,
                                cudaMemcpyDeviceToHost, gpu_cache.stream));
     CUDA_CHECK(cudaStreamSynchronize(gpu_cache.stream));
+#else
+    CUDA_CHECK(cudaMemcpy(tilec->data, d_data_local, data_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+#endif
+    
+    // Free temporary buffers if not using persistent cache
+    if (!use_persistent) {
+        cudaFree(d_tmp_local);
+        cudaFree(d_data_local);
+    }
     
     return OPJ_TRUE;
 }
