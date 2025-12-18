@@ -76,6 +76,9 @@ static opj_image_t* load_pnm_as_image(const char* path, profile_times_t* prof) {
         return NULL;
     }
 
+    /* Improve throughput on large PPM/PGM (best-effort) */
+    (void)setvbuf(fp, NULL, _IOFBF, 4 * 1024 * 1024);
+
     char tok[64];
     if (!read_non_comment_token(fp, tok, sizeof(tok))) {
         fclose(fp);
@@ -204,6 +207,37 @@ int encode_single_image(const char* in_path, const char* out_path, int rank) {
     parameters.cp_disto_alloc = 1;
     parameters.numresolution = 6;
 
+    // Optional: enable tiling via environment variables
+    const char* env_tile_w = getenv("J2K_TILE_W");
+    const char* env_tile_h = getenv("J2K_TILE_H");
+    if (env_tile_w && env_tile_h) {
+        int tile_w = atoi(env_tile_w);
+        int tile_h = atoi(env_tile_h);
+        if (tile_w > 0 && tile_h > 0) {
+            parameters.tile_size_on = OPJ_TRUE;
+            parameters.cp_tdx = tile_w;
+            parameters.cp_tdy = tile_h;
+            if (rank == 0) {
+                printf("Using tiling: %dx%d (env)\n", tile_w, tile_h);
+            }
+        }
+    }
+
+    // Optional: override codeblock size for granularity
+    const char* env_cblkw = getenv("J2K_CBLKW");
+    const char* env_cblkh = getenv("J2K_CBLKH");
+    if (env_cblkw && env_cblkh) {
+        int cblkw = atoi(env_cblkw);
+        int cblkh = atoi(env_cblkh);
+        if (cblkw > 0 && cblkh > 0) {
+            parameters.cblockw_init = cblkw;
+            parameters.cblockh_init = cblkh;
+            if (rank == 0) {
+                printf("Using codeblock: %dx%d (env)\n", cblkw, cblkh);
+            }
+        }
+    }
+
     opj_codec_t* codec = opj_create_compress(OPJ_CODEC_J2K);
     if (!codec) {
         opj_image_destroy(image);
@@ -213,6 +247,21 @@ int encode_single_image(const char* in_path, const char* out_path, int rank) {
     opj_set_error_handler(codec, error_callback, NULL);
     opj_set_warning_handler(codec, warning_callback, NULL);
     opj_set_info_handler(codec, info_callback, NULL);
+
+    // Set number of threads for parallel encoding per rank
+    int num_threads = omp_get_max_threads();
+    const char* env_threads = getenv("OMP_NUM_THREADS");
+    if (env_threads) {
+        int t = atoi(env_threads);
+        if (t > 0) num_threads = t;
+    }
+    if (num_threads > 0) {
+        if (!opj_codec_set_threads(codec, num_threads)) {
+            if (rank == 0) fprintf(stderr, "Warning: Failed to set %d threads\n", num_threads);
+        } else {
+            if (rank == 0) fprintf(stdout, "Using %d threads for encoding per rank\n", num_threads);
+        }
+    }
 
     opj_stream_t* stream = opj_stream_create_default_file_stream(out_path, OPJ_FALSE);
     if (!stream) {
@@ -276,6 +325,250 @@ int encode_single_image(const char* in_path, const char* out_path, int rank) {
     return 0;
 }
 
+// Encode from already-loaded image in memory (for tile parallel mode)
+static int encode_single_image_from_memory(opj_image_t* image, const char* out_path, int rank) {
+    profile_times_t prof_times = {0};
+    double t_start, total_start = opj_clock();
+
+    t_start = opj_clock();
+    opj_cparameters_t parameters;
+    opj_set_default_encoder_parameters(&parameters);
+    parameters.tcp_rates[0] = 0;
+    parameters.tcp_numlayers = 1;
+    parameters.cp_disto_alloc = 1;
+    parameters.numresolution = 6;
+
+    opj_codec_t* codec = opj_create_compress(OPJ_CODEC_J2K);
+    if (!codec) {
+        return 1;
+    }
+
+    opj_set_error_handler(codec, error_callback, NULL);
+    opj_set_warning_handler(codec, warning_callback, NULL);
+    opj_set_info_handler(codec, info_callback, NULL);
+
+    // Set number of threads for parallel encoding per rank
+    int num_threads = omp_get_max_threads();
+    const char* env_threads = getenv("OMP_NUM_THREADS");
+    if (env_threads) {
+        int t = atoi(env_threads);
+        if (t > 0) num_threads = t;
+    }
+    if (num_threads > 0) {
+        if (!opj_codec_set_threads(codec, num_threads)) {
+            if (rank == 0) fprintf(stderr, "Warning: Failed to set %d threads\n", num_threads);
+        }
+    }
+
+    opj_stream_t* stream = opj_stream_create_default_file_stream(out_path, OPJ_FALSE);
+    if (!stream) {
+        opj_destroy_codec(codec);
+        return 1;
+    }
+
+    if (!opj_setup_encoder(codec, &parameters, image)) {
+        fprintf(stderr, "opj_setup_encoder failed\n");
+        opj_stream_destroy(stream);
+        opj_destroy_codec(codec);
+        return 1;
+    }
+    prof_times.setup_time = opj_clock() - t_start;
+
+    t_start = opj_clock();
+    if (!opj_start_compress(codec, image, stream)) {
+        fprintf(stderr, "opj_start_compress failed\n");
+        opj_stream_destroy(stream);
+        opj_destroy_codec(codec);
+        return 1;
+    }
+    prof_times.compress_start_time = opj_clock() - t_start;
+
+    t_start = opj_clock();
+    if (!opj_encode(codec, stream)) {
+        fprintf(stderr, "opj_encode failed\n");
+        opj_end_compress(codec, stream);
+        opj_stream_destroy(stream);
+        opj_destroy_codec(codec);
+        return 1;
+    }
+    prof_times.encode_time = opj_clock() - t_start;
+
+    t_start = opj_clock();
+    if (!opj_end_compress(codec, stream)) {
+        fprintf(stderr, "opj_end_compress failed\n");
+        opj_stream_destroy(stream);
+        opj_destroy_codec(codec);
+        return 1;
+    }
+    prof_times.compress_end_time = opj_clock() - t_start;
+
+    prof_times.total_time = opj_clock() - total_start;
+
+    printf("[Rank %d] Encoded tile -> %s\n", rank, out_path);
+    printf("[Rank %d] Total: %.4fs, T1: %.4fs (%.1f%%), DWT: %.4fs (%.1f%%)\n",
+           rank, prof_times.total_time,
+           global_timing.t1_time, 100.0 * global_timing.t1_time / prof_times.total_time,
+           global_timing.dwt_time, 100.0 * global_timing.dwt_time / prof_times.total_time);
+
+    opj_stream_destroy(stream);
+    opj_destroy_codec(codec);
+
+    return 0;
+}
+
+// Define TILE_PARALLEL to enable tile-based parallelization of a single image
+// Otherwise, use multi-image parallelization (default)
+// Compile with: -DTILE_PARALLEL to enable tile mode
+
+#ifdef TILE_PARALLEL
+
+// Tile-based parallel: split single image across MPI ranks
+int main(int argc, char** argv) {
+    int rank, size;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (argc != 3) {
+        if (rank == 0) {
+            fprintf(stderr, "Usage (TILE_PARALLEL mode): %s <input.ppm> <output_prefix>\n", argv[0]);
+            fprintf(stderr, "Each of %d MPI ranks will encode a horizontal tile\n", size);
+        }
+        MPI_Finalize();
+        return 2;
+    }
+
+    const char* in_path = argv[1];
+    const char* out_prefix = argv[2];
+    
+    if (rank == 0) {
+        printf("=== MPI + OpenMP J2K Encoder (TILE_PARALLEL MODE) ===\n");
+        printf("MPI ranks: %d\n", size);
+        printf("OpenMP threads per rank: %d\n", omp_get_max_threads());
+        printf("Input: %s\n", in_path);
+        printf("Each rank encodes a horizontal tile (row-based split)\n");
+        printf("======================================================\n\n");
+    }
+
+    double start_time = MPI_Wtime();
+
+    opj_image_t* full_image = NULL;
+    int width = 0, height = 0, numcomps = 0;
+
+    // Rank 0 reads the full image
+    if (rank == 0) {
+        profile_times_t dummy_prof = {0,0,0,0,0,0};
+        full_image = load_pnm_as_image(in_path, &dummy_prof);
+        if (!full_image) {
+            fprintf(stderr, "[Rank 0] Failed to load image\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        width = full_image->x1 - full_image->x0;
+        height = full_image->y1 - full_image->y0;
+        numcomps = full_image->numcomps;
+        printf("[Rank 0] Loaded image: %dx%d, %d components\n", width, height, numcomps);
+    }
+
+    // Broadcast image dimensions
+    MPI_Bcast(&width, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&height, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&numcomps, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Calculate tile height for each rank
+    int tile_height = height / size;
+    int remainder = height % size;
+    int my_tile_height = tile_height + (rank < remainder ? 1 : 0);
+    int my_start_row = rank * tile_height + (rank < remainder ? rank : remainder);
+
+    printf("[Rank %d] Tile: rows %d to %d (height=%d)\n", 
+           rank, my_start_row, my_start_row + my_tile_height - 1, my_tile_height);
+
+    // Create tile image structure
+    opj_image_cmptparm_t cmptparms[3];
+    memset(cmptparms, 0, sizeof(cmptparms));
+    for (int i = 0; i < numcomps; i++) {
+        cmptparms[i].dx = 1;
+        cmptparms[i].dy = 1;
+        cmptparms[i].w = width;
+        cmptparms[i].h = my_tile_height;
+        cmptparms[i].x0 = 0;
+        cmptparms[i].y0 = 0;
+        cmptparms[i].prec = 8;
+        cmptparms[i].bpp = 8;
+        cmptparms[i].sgnd = 0;
+    }
+
+    opj_image_t* tile_image = opj_image_create(numcomps, cmptparms, 
+                                                numcomps == 3 ? OPJ_CLRSPC_SRGB : OPJ_CLRSPC_GRAY);
+    if (!tile_image) {
+        fprintf(stderr, "[Rank %d] Failed to create tile image\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    tile_image->x0 = 0;
+    tile_image->y0 = 0;
+    tile_image->x1 = width;
+    tile_image->y1 = my_tile_height;
+
+    // Distribute tile data
+    int pixels_per_tile = width * my_tile_height;
+    
+    if (rank == 0) {
+        // Rank 0: copy own tile
+        for (int c = 0; c < numcomps; c++) {
+            for (int row = 0; row < my_tile_height; row++) {
+                memcpy(&tile_image->comps[c].data[row * width],
+                       &full_image->comps[c].data[row * width],
+                       width * sizeof(OPJ_INT32));
+            }
+        }
+        
+        // Send tiles to other ranks
+        for (int r = 1; r < size; r++) {
+            int r_tile_height = tile_height + (r < remainder ? 1 : 0);
+            int r_start_row = r * tile_height + (r < remainder ? r : remainder);
+            int r_pixels = width * r_tile_height;
+            
+            for (int c = 0; c < numcomps; c++) {
+                MPI_Send(&full_image->comps[c].data[r_start_row * width],
+                         r_pixels, MPI_INT, r, c, MPI_COMM_WORLD);
+            }
+        }
+        
+        opj_image_destroy(full_image);
+    } else {
+        // Other ranks: receive tile data
+        for (int c = 0; c < numcomps; c++) {
+            MPI_Recv(tile_image->comps[c].data, pixels_per_tile, MPI_INT,
+                     0, c, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+
+    // Each rank encodes its own tile
+    char out_path[512];
+    snprintf(out_path, sizeof(out_path), "%s_tile%d.j2k", out_prefix, rank);
+    
+    encode_single_image_from_memory(tile_image, out_path, rank);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    double end_time = MPI_Wtime();
+
+    if (rank == 0) {
+        printf("\n======================================================\n");
+        printf("Total wall time: %.4f seconds\n", end_time - start_time);
+        printf("Output files: %s_tile0.j2k to %s_tile%d.j2k\n", 
+               out_prefix, out_prefix, size - 1);
+        printf("======================================================\n");
+    }
+
+    opj_image_destroy(tile_image);
+    MPI_Finalize();
+    return 0;
+}
+
+#else
+
+// Default: Multi-image parallel (each rank encodes different images)
 int main(int argc, char** argv) {
     int rank, size;
     
@@ -327,3 +620,5 @@ int main(int argc, char** argv) {
     MPI_Finalize();
     return 0;
 }
+
+#endif  // TILE_PARALLEL

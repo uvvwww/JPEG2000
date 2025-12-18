@@ -1,0 +1,287 @@
+\documentclass[UTF8,a4paper,12pt]{ctexart}
+
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{amsmath}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{teal},
+  showstringspaces=false
+}
+
+\title{JPEG2000 平行化編解碼與效能分析：以 OpenJPEG J2K-only 專案為例}
+\author{b12901068\\
+平行程式設計（ACD114118）}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+JPEG2000 具備高壓縮效率、多解析度與錯誤韌性等優點，常用於數位電影與醫療影像等高解析度場景；然而其編解碼流程計算量龐大，尤其 Tier-1（EBCOT 熵編碼）往往成為效能瓶頸。
+本專題以 OpenJPEG 的 J2K 核心程式碼為基礎，建置一個可在 Slurm/HPC 環境重現的最小化編解碼實驗平台，並針對多執行緒（OpenMP/內建 thread pool）、切塊（tiling）與批次工作分配（MPI 的多進程批次處理）進行優化與量測。
+實驗結果顯示：在 6016$\times$4000 圖像上，編碼在 8 threads 可達到約 6.8$\times$ speedup；解碼端啟用 OpenJPEG 的 \texttt{OPJ\_NUM\_THREADS} thread pool 後，於 5184$\times$3456 圖像可達 7.26$\times$ speedup，並透過批次寫入與 OpenMP 像素轉換，將整體解碼時間進一步降至 0.68s。
+此外，本專題加入可由環境變數控制的 tiling 與 codeblock 參數，並提供像素級正確性驗證流程（\texttt{compare -metric AE} 為 0 時代表 lossless 重建完全一致），使得後續可延伸進行更完整的 work balance 與 scalability 研究。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{前言}
+JPEG2000（ISO/IEC 15444）以小波轉換（DWT）與位元平面（bit-plane）熵編碼提供高壓縮率與多解析度特性，並支援以 tile 為單位的獨立處理。
+相較傳統 JPEG，JPEG2000 的計算流程更複雜，對於高解析度影像（例如 4K/5K）在一般 CPU 上達到 real-time 編碼具有挑戰性。
+近期也有研究嘗試以 GPU/CUDA 將 DWT、量化、色彩轉換等算子搬移至裝置端以提升吞吐量~\cite{lee_cuda_j2k}.
+
+本專題聚焦於「在既有 OpenJPEG 程式碼基礎上，如何用工程化方式達成可量測、可重現的平行化加速」，並回答以下問題：
+\begin{enumerate}[label=(\arabic*)]
+  \item JPEG2000 的主要瓶頸在哪一段？是否能以 profiling 驗證？
+  \item OpenJPEG 內建的 thread pool 與 tile/codeblock 參數如何影響平行度？
+  \item 在 HPC/Slurm 環境下，應如何設計 \texttt{ranks$\times$threads} 與 work balance 的實驗？
+\end{enumerate}
+
+\section{JPEG2000 編碼流程與平行化機會}
+\subsection{流程概述}
+本專題採用的 JPEG2000（J2K codestream）編碼管線可概括為：
+\begin{enumerate}[label=(\arabic*)]
+  \item 讀取輸入（PGM/PPM）並轉換為 \texttt{opj\_image\_t}
+  \item（可選）多元件轉換（MCT）
+  \item DC level shift
+  \item 2D-DWT（多解析度分解）
+  \item Tier-1（量化 + EBCOT 熵編碼；以 codeblock/bit-plane 為單位）
+  \item Tier-2（packetization/碼流組裝）
+\end{enumerate}
+
+\subsection{平行化粒度}
+JPEG2000 的平行化常見粒度（由粗到細）如下：
+\begin{itemize}
+  \item \textbf{跨圖片（batch）}：每張圖片獨立，最容易取得線性加速（適合 MPI/工作陣列）。
+  \item \textbf{跨 tiles}：每個 tile 可獨立編碼（但會改變碼流結構與壓縮行為）。
+  \item \textbf{跨 components}：RGB 三通道可視為獨立輸入（視設定而定）。
+  \item \textbf{跨 codeblocks}：Tier-1 可把 codeblock 當作工作單元（OpenJPEG 以 thread pool 方式實作）。
+\end{itemize}
+
+本專題在不改動 JPEG2000 標準的前提下，主要利用跨圖片與跨 codeblock（以及部分 I/O 轉換）的平行化。
+
+\section{系統實作與優化內容}
+\subsection{專案結構與建置}
+本專案為 OpenJPEG 的 J2K-only 精簡版本，核心程式位於 \texttt{src/}，並以 Makefile 建置靜態函式庫與最小編解碼器：
+\begin{itemize}
+  \item \texttt{build/libopenjp2\_j2k.a}
+  \item \texttt{build/j2k\_encode\_pnm}：PGM/PPM $\rightarrow$ J2K
+  \item \texttt{build/j2k\_decode\_pnm}：J2K $\rightarrow$ PGM/PPM
+  \item \texttt{build/j2k\_encode\_profile}, \texttt{build/j2k\_decode\_profile}：含細粒度計時的版本
+\end{itemize}
+
+Makefile 以 \texttt{-O3 -march=native} 搭配 OpenMP 與 pthread 為主要設定，便於在單節點上測試平行化。
+
+\subsection{計時方式修正：Wall-clock vs CPU-time}
+多執行緒程式若使用 CPU-time（各 thread CPU 使用量加總）可能導致「看起來更慢」的錯誤結論。
+因此本專題採用（或改用）\texttt{gettimeofday} 的 wall-clock 實作 \texttt{opj\_clock()}（位於 \texttt{src/common/opj\_clock.cpp}），以反映實際用戶感知的執行時間。
+
+\subsection{編碼端：threads、tiling 與 codeblock 參數}
+\paragraph{OpenJPEG 內建多執行緒}
+編碼端可透過 \texttt{opj\_codec\_set\_threads(codec, n)} 啟用 OpenJPEG 內建 thread pool，使 Tier-1 codeblock 編碼可並行。
+本專題亦以環境變數 \texttt{OMP\_NUM\_THREADS} 作為 thread 數的外部控制介面。
+
+\paragraph{新增：以環境變數控制 tiling}
+為便於做參數掃描與實驗重現，本專題加入兩個環境變數以啟用 tile-based 編碼：
+\begin{lstlisting}[language=bash]
+export J2K_TILE_W=1024
+export J2K_TILE_H=1024
+\end{lstlisting}
+對應到 \texttt{opj\_cparameters\_t} 的 \texttt{tile\_size\_on/cp\_tdx/cp\_tdy}，可在不改程式碼的情況下切換 tile 設定。
+
+\paragraph{新增：以環境變數控制 codeblock 大小}
+同樣地，新增 \texttt{J2K\_CBLKW/J2K\_CBLKH} 以覆寫 codeblock 大小（需滿足為 2 的次方且面積不超過規範限制），便於研究「平行粒度 vs 壓縮效能」的 tradeoff。
+
+\subsection{解碼端：啟用 OPJ\_NUM\_THREADS 與輸出 I/O 優化}
+解碼端的關鍵發現是：OpenJPEG 的 Tier-1 decode 本身就有 thread pool 支援，但需要設定 \texttt{OPJ\_NUM\_THREADS} 才會啟用。
+此外，寫回 PPM/PGM 時，若逐像素呼叫 \texttt{fwrite} 會形成 I/O 瓶頸；因此將其改為「一次配置整張 buffer + OpenMP 平行轉換 + 單次 fwrite」可顯著降低寫檔時間。
+
+\subsection{MPI 批次編碼（跨圖片）}
+本專題提供 \texttt{j2k\_encode\_mpi.cpp} 作為批次處理的 baseline：將輸入圖片清單以 round-robin 分配至各 rank，各 rank 內再透過 OpenJPEG thread pool 平行化 Tier-1。
+此設計特別適合「多張圖片」的總吞吐量提升；若要讓單張圖片跨 rank 共同編碼，則需額外設計跨 rank 的 tile 分工與碼流合併（超出本專題範圍）。
+實務上建置 MPI 版本需要 \texttt{mpicxx}（例如 OpenMPI/MPICH）；在部分 HPC 環境可能需先 \texttt{module load} 對應工具鏈後再 \texttt{make mpi}。
+
+\section{實驗設計}
+\subsection{平台與資料集}
+實驗在 Taiwania 3（Slurm）環境進行，並使用專案內提供之 PPM/PGM 與 J2K 檔案，例如：
+\begin{itemize}
+  \item \texttt{input/photo2590.ppm}：6016$\times$4000
+  \item \texttt{input/sample\_5184$\times$3456.ppm}：5184$\times$3456
+  \item \texttt{output/dataset\_03.j2k} 與 \texttt{dataset/03.ppm}：用於大型測試與正確性比對
+\end{itemize}
+
+\subsection{評估指標}
+\begin{itemize}
+  \item \textbf{Wall time}：整體執行時間與階段性拆解（profiling）
+  \item \textbf{Speedup}：$S(p)=T(1)/T(p)$
+  \item \textbf{Efficiency}：$E(p)=S(p)/p$
+  \item \textbf{正確性（lossless）}：使用 ImageMagick \texttt{compare -metric AE} 驗證像素完全一致
+  \item \textbf{輸出大小}：檔案大小與參數（tiling/codeblock）之關聯（輔助分析）
+\end{itemize}
+
+\section{實驗結果與分析}
+\subsection{編碼端：多執行緒 scaling}
+表~\ref{tab:encode_scaling} 整理在 6016$\times$4000 圖像上的編碼時間與加速比（取自專案既有量測摘要）。
+\begin{table}[h]
+  \centering
+  \caption{編碼端多執行緒效能（6016$\times$4000）}
+  \label{tab:encode_scaling}
+  \sisetup{table-format=2.2}
+  \begin{tabular}{@{}l S S l@{}}
+    \toprule
+    配置 & {時間(s)} & {加速比} & {效率} \\
+    \midrule
+    1 thread & 12.51 & 1.00 & -- \\
+    4 threads & 3.38 & 3.70 & 92.5\% \\
+    8 threads & 1.83 & 6.80 & 85.0\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+可見 4$\rightarrow$8 threads 仍有顯著加速，但效率開始下降，顯示同步/記憶體頻寬等限制逐漸主導。
+
+\subsection{編碼端：瓶頸分解（profiling）}
+以 \texttt{profiling\_results.txt} 的量測為例，6016$\times$4000 圖像中，主要時間集中於 Encode main，其中 Tier-1 約佔 95\%。
+此結果符合 JPEG2000 常見特性：EBCOT 熵編碼是主要計算熱點，因此平行化設計（codeblock 工作分配）應優先針對 Tier-1。
+
+\subsection{編碼端：tiling 的影響（5184$\times$3456）}
+本專題以新增的環境變數控制 tiling，進行 8 threads 下的比較：
+\begin{table}[h]
+  \centering
+  \caption{tiling 參數對編碼時間的影響（5184$\times$3456, 8 threads）}
+  \label{tab:tiling}
+  \sisetup{table-format=1.3}
+  \begin{tabular}{@{}l S@{}}
+    \toprule
+    設定 & {編碼時間(s)} \\
+    \midrule
+    不切 tile & 1.046 \\
+    tile 1024$\times$1024 & 1.065 \\
+    tile 2048$\times$2048 & 1.081 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+在此測試下 tiling 未帶來加速，甚至略有 overhead；推測原因是 OpenJPEG 已能在單 tile 內以 codeblock 取得足夠平行度，而 tiling 增加額外的分割與碼流管理成本。
+然而 tiling 仍有其價值：在更大圖像、記憶體峰值受限、或需要更高平行粒度（例如更高 thread 數）時，可能改善可擴展性。
+
+\subsection{解碼端：OPJ\_NUM\_THREADS 與 I/O 優化}
+解碼端的關鍵結果如表~\ref{tab:decode_threads}：
+\begin{table}[h]
+  \centering
+  \caption{解碼端 thread pool 啟用前後（5184$\times$3456）}
+  \label{tab:decode_threads}
+  \sisetup{table-format=1.4}
+  \begin{tabular}{@{}l S l@{}}
+    \toprule
+    設定 & {時間(s)} & 備註 \\
+    \midrule
+    \texttt{OPJ\_NUM\_THREADS=1} & 8.3755 & baseline \\
+    \texttt{OPJ\_NUM\_THREADS=16} & 1.1526 & 7.26$\times$ speedup \\
+    \texttt{OPJ\_NUM\_THREADS=16} + 寫檔優化 & 0.6816 & total 12.3$\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+可見解碼端不僅能透過 thread pool 加速 Tier-1 decode，也必須同步處理輸出 I/O，否則瓶頸會轉移到寫檔。
+
+\subsection{正確性驗證（lossless）}
+本專題以 ImageMagick 的像素級比較驗證 lossless 正確性：
+\begin{lstlisting}[language=bash]
+compare -metric AE dataset/03.ppm output/test_optimized.ppm null: 2>&1
+\end{lstlisting}
+當輸出為 \texttt{0} 時，代表兩張影像像素完全一致，確認壓縮$\rightarrow$解壓縮流程在 lossless 設定下可完整重建。
+
+\section{討論：work balance 與後續可做的差異化}
+\subsection{為何「多進程」有意義？}
+對於大量圖片（batch），多進程（MPI ranks）能把工作切成互不相依的子任務，取得接近線性的總吞吐量提升；同時也較容易用 Slurm 的 \texttt{-n/-c} 控制資源，避免 oversubscription。
+
+\subsection{可寫入報告的 Work Balance 方法}
+在同一個總核心數限制下，建議比較以下策略：
+\begin{itemize}
+  \item \textbf{Hybrid 配置掃描}：固定總核心數（例如 56），比較 $1\times56, 2\times28, 4\times14, 7\times8$（ranks$\times$threads）的 wall time、speedup 與效率。
+  \item \textbf{靜態分配 vs 動態派工}：round-robin（現有 baseline）與 master-worker work queue（動態派工）在「圖片尺寸差異很大」時的 load imbalance。
+  \item \textbf{粒度參數掃描}：tile size（\texttt{J2K\_TILE\_W/H}）與 codeblock（\texttt{J2K\_CBLKW/H}）對平行度與 overhead 的影響。
+\end{itemize}
+
+\subsection{Real-time 目標評估}
+若以 24 fps 的 real-time 定義，每張 frame 需在 41.7ms 內完成編碼；目前在 5K 圖像上即使達到約 1s 等級仍有顯著差距。
+因此本專題更合理的目標是「顯著降低 wall time、提升 batch 吞吐量、並建立可擴展的測試框架」，以利後續導入更激進的優化（例如 GPU/CUDA）。
+
+\section{結論與未來工作}
+本專題完成一個可重現的 JPEG2000（OpenJPEG）平行化實驗平台，並以 profiling 驗證 Tier-1 為主要瓶頸。
+透過 thread pool 參數啟用、I/O 優化與可外部控制的 tiling/codeblock 設定，建立了可用於後續 work balance/scalability 研究的基礎。
+未來可延伸方向包括：
+\begin{itemize}
+  \item 將 MPI 批次編碼改為 master-worker 動態派工以改善尺寸不均的負載不平衡。
+  \item 在具 CUDA 環境的節點上，優先將 DWT/MCT/量化等資料平行度高的算子搬移至 GPU，並研究 Tier-1 的可行 GPU 化策略~\cite{lee_cuda_j2k}。
+\end{itemize}
+
+\appendix
+\section{重現實驗的指令（Reproducibility）}
+\subsection{建置}
+\begin{lstlisting}[language=bash]
+make -j
+make build/j2k_encode_profile build/j2k_decode_profile
+\end{lstlisting}
+
+\subsection{編碼（threads / tiling / codeblock）}
+\begin{lstlisting}[language=bash]
+# threads
+OMP_NUM_THREADS=8 ./build/j2k_encode_pnm input/sample_5184×3456.ppm output/out.j2k
+
+# tiling
+OMP_NUM_THREADS=8 J2K_TILE_W=1024 J2K_TILE_H=1024 \
+  ./build/j2k_encode_pnm input/sample_5184×3456.ppm output/out_tile.j2k
+
+# codeblock
+OMP_NUM_THREADS=8 J2K_CBLKW=64 J2K_CBLKH=64 \
+  ./build/j2k_encode_pnm input/sample_5184×3456.ppm output/out_cb64.j2k
+\end{lstlisting}
+
+\subsection{Slurm 範例（解碼）}
+\begin{lstlisting}[language=bash]
+srun -N 1 -n 1 -c 56 -A ACD114118 bash -lc '
+  export OPJ_NUM_THREADS=$SLURM_CPUS_PER_TASK
+  ./build/j2k_decode_profile output/dataset_03.j2k output/test_optimized.ppm
+'
+\end{lstlisting}
+
+\subsection{像素級正確性比對}
+\begin{lstlisting}[language=bash]
+compare -metric AE dataset/03.ppm output/test_optimized.ppm null: 2>&1
+\end{lstlisting}
+
+\begin{thebibliography}{9}
+\bibitem{jpeg2000}
+ISO/IEC 15444-1: JPEG 2000 Image Coding System, Part 1: Core Coding System.
+
+\bibitem{openjpeg}
+OpenJPEG Project. \url{https://github.com/uclouvain/openjpeg}
+
+\bibitem{lee_cuda_j2k}
+Jeong-Woo Lee, Bumho Kim, and Ki-Song Yoon, ``CUDA-based JPEG2000 Encoding Scheme,'' ETRI (Electronics and Telecommunications Research Institute), Korea.
+\end{thebibliography}
+
+\end{document}

@@ -1,30 +1,54 @@
+/**
+ * JPEG2000 Encoder with configurable OpenMP optimizations
+ * 
+ * Compile with different flags to enable/disable optimizations:
+ *   -DPIXEL_PARALLEL=1    Enable parallel pixel conversion (default: 1)
+ *   -DT1_PARALLEL=1       Enable parallel T1 encoding (default: 1)
+ *   -DNUM_THREADS=N       Set number of threads (default: OMP_NUM_THREADS)
+ * 
+ * Examples:
+ *   # All optimizations enabled (default)
+ *   g++ -O3 -fopenmp j2k_encode_experiment.cpp ...
+ * 
+ *   # Only T1 parallel, no pixel parallel
+ *   g++ -O3 -fopenmp -DPIXEL_PARALLEL=0 j2k_encode_experiment.cpp ...
+ * 
+ *   # No OpenMP at all (baseline)
+ *   g++ -O3 -DPIXEL_PARALLEL=0 -DT1_PARALLEL=0 j2k_encode_experiment.cpp ...
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <string.h>
 #include <ctype.h>
 #include <omp.h>
 
 #include "openjpeg.h"
-#include "profile_times.h"
 
-/* Declare internal timing function from OpenJPEG */
 extern double opj_clock(void);
 
-/* External timing data from tcd.cpp */
-extern struct TimingData global_timing;
+// Default optimization settings
+#ifndef PIXEL_PARALLEL
+#define PIXEL_PARALLEL 1
+#endif
 
-// Profiling structure
+#ifndef T1_PARALLEL
+#define T1_PARALLEL 1
+#endif
+
+#ifndef NUM_THREADS
+#define NUM_THREADS 0  // 0 = use OMP_NUM_THREADS or max available
+#endif
+
 typedef struct {
     double total_time;
     double load_image_time;
+    double pixel_convert_time;
     double setup_time;
     double compress_start_time;
     double encode_time;
     double compress_end_time;
 } profile_times_t;
-
-static profile_times_t prof_times = {0};
 
 static void error_callback(const char* msg, void* client_data) {
     (void)client_data;
@@ -43,18 +67,12 @@ static void info_callback(const char* msg, void* client_data) {
 
 static int read_non_comment_token(FILE* fp, char* buf, size_t buf_size) {
     int ch;
-
     do {
         ch = fgetc(fp);
-        if (ch == EOF) {
-            return 0;
-        }
-        if (isspace(ch)) {
-            continue;
-        }
+        if (ch == EOF) return 0;
+        if (isspace(ch)) continue;
         if (ch == '#') {
-            while ((ch = fgetc(fp)) != EOF && ch != '\n') {
-            }
+            while ((ch = fgetc(fp)) != EOF && ch != '\n');
             continue;
         }
         ungetc(ch, fp);
@@ -65,8 +83,7 @@ static int read_non_comment_token(FILE* fp, char* buf, size_t buf_size) {
     while ((ch = fgetc(fp)) != EOF) {
         if (isspace(ch) || ch == '#') {
             if (ch == '#') {
-                while ((ch = fgetc(fp)) != EOF && ch != '\n') {
-                }
+                while ((ch = fgetc(fp)) != EOF && ch != '\n');
             }
             break;
         }
@@ -80,7 +97,7 @@ static int read_non_comment_token(FILE* fp, char* buf, size_t buf_size) {
     return len > 0;
 }
 
-static opj_image_t* load_pnm_as_image(const char* path) {
+static opj_image_t* load_pnm_as_image(const char* path, profile_times_t* prof) {
     double t_start = opj_clock();
     
     FILE* fp = fopen(path, "rb");
@@ -88,6 +105,8 @@ static opj_image_t* load_pnm_as_image(const char* path) {
         fprintf(stderr, "Cannot open input: %s\n", path);
         return NULL;
     }
+
+    (void)setvbuf(fp, NULL, _IOFBF, 4 * 1024 * 1024);
 
     char tok[64];
     if (!read_non_comment_token(fp, tok, sizeof(tok))) {
@@ -106,22 +125,13 @@ static opj_image_t* load_pnm_as_image(const char* path) {
         return NULL;
     }
 
-    if (!read_non_comment_token(fp, tok, sizeof(tok))) {
-        fclose(fp);
-        return NULL;
-    }
+    if (!read_non_comment_token(fp, tok, sizeof(tok))) { fclose(fp); return NULL; }
     int width = atoi(tok);
 
-    if (!read_non_comment_token(fp, tok, sizeof(tok))) {
-        fclose(fp);
-        return NULL;
-    }
+    if (!read_non_comment_token(fp, tok, sizeof(tok))) { fclose(fp); return NULL; }
     int height = atoi(tok);
 
-    if (!read_non_comment_token(fp, tok, sizeof(tok))) {
-        fclose(fp);
-        return NULL;
-    }
+    if (!read_non_comment_token(fp, tok, sizeof(tok))) { fclose(fp); return NULL; }
     int maxval = atoi(tok);
 
     if (width <= 0 || height <= 0 || maxval <= 0 || maxval > 255) {
@@ -174,48 +184,79 @@ static opj_image_t* load_pnm_as_image(const char* path) {
         return NULL;
     }
 
+    double t_file_done = opj_clock();
+    prof->load_image_time = t_file_done - t_start;
+
+    // Pixel conversion - optionally parallel
+    double t_convert_start = opj_clock();
+    
     if (is_ppm) {
+#if PIXEL_PARALLEL
+        #pragma omp parallel for schedule(static)
+#endif
         for (size_t i = 0; i < pixels; i++) {
             image->comps[0].data[i] = data[i * 3 + 0];
             image->comps[1].data[i] = data[i * 3 + 1];
             image->comps[2].data[i] = data[i * 3 + 2];
         }
     } else {
+#if PIXEL_PARALLEL
+        #pragma omp parallel for schedule(static)
+#endif
         for (size_t i = 0; i < pixels; i++) {
             image->comps[0].data[i] = data[i];
         }
     }
 
     free(data);
-    
-    double t_end = opj_clock();
-    prof_times.load_image_time = t_end - t_start;
+    prof->pixel_convert_time = opj_clock() - t_convert_start;
     
     return image;
 }
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input.pgm|input.ppm> <output.j2k>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input.ppm> <output.j2k>\n", argv[0]);
+        fprintf(stderr, "\nCompile-time options:\n");
+        fprintf(stderr, "  PIXEL_PARALLEL=%d (pixel conversion)\n", PIXEL_PARALLEL);
+        fprintf(stderr, "  T1_PARALLEL=%d (T1 encoding)\n", T1_PARALLEL);
+        fprintf(stderr, "  NUM_THREADS=%d (0=auto)\n", NUM_THREADS);
         return 2;
     }
-
-    double total_start = opj_clock();
 
     const char* in_path = argv[1];
     const char* out_path = argv[2];
 
-    opj_image_t* image = load_pnm_as_image(in_path);
+    // Determine thread count
+    int num_threads = NUM_THREADS;
+    if (num_threads == 0) {
+        num_threads = omp_get_max_threads();
+    }
+    omp_set_num_threads(num_threads);
+
+    printf("=== OpenMP Optimization Experiment ===\n");
+    printf("PIXEL_PARALLEL: %s\n", PIXEL_PARALLEL ? "ENABLED" : "DISABLED");
+    printf("T1_PARALLEL:    %s\n", T1_PARALLEL ? "ENABLED" : "DISABLED");
+    printf("NUM_THREADS:    %d\n", num_threads);
+    printf("======================================\n\n");
+
+    profile_times_t prof = {0};
+    double total_start = opj_clock();
+
+    // Load image
+    opj_image_t* image = load_pnm_as_image(in_path, &prof);
     if (!image) {
         return 1;
     }
 
-    double t_start, t_end;
+    printf("Image: %dx%d, %d components\n", 
+           image->x1 - image->x0, image->y1 - image->y0, image->numcomps);
+
+    // Setup encoder
+    double t_setup_start = opj_clock();
     
-    t_start = opj_clock();
     opj_cparameters_t parameters;
     opj_set_default_encoder_parameters(&parameters);
-
     parameters.tcp_rates[0] = 0;
     parameters.tcp_numlayers = 1;
     parameters.cp_disto_alloc = 1;
@@ -231,20 +272,15 @@ int main(int argc, char** argv) {
     opj_set_warning_handler(codec, warning_callback, NULL);
     opj_set_info_handler(codec, info_callback, NULL);
 
-    // Set number of threads for parallel encoding (auto-detect max threads)
-    int num_threads = omp_get_max_threads();
-    const char* env_threads = getenv("OMP_NUM_THREADS");
-    if (env_threads) {
-        int t = atoi(env_threads);
-        if (t > 0) num_threads = t;
+    // Set T1 parallel encoding
+#if T1_PARALLEL
+    if (!opj_codec_set_threads(codec, num_threads)) {
+        fprintf(stderr, "Warning: Failed to set %d threads for T1\n", num_threads);
     }
-    if (num_threads > 0) {
-        if (!opj_codec_set_threads(codec, num_threads)) {
-            fprintf(stderr, "Warning: Failed to set %d threads\n", num_threads);
-        } else {
-            fprintf(stdout, "Using %d threads for encoding\n", num_threads);
-        }
-    }
+#else
+    // Force single-threaded T1 encoding
+    opj_codec_set_threads(codec, 1);
+#endif
 
     opj_stream_t* stream = opj_stream_create_default_file_stream(out_path, OPJ_FALSE);
     if (!stream) {
@@ -260,10 +296,10 @@ int main(int argc, char** argv) {
         opj_image_destroy(image);
         return 1;
     }
-    t_end = opj_clock();
-    prof_times.setup_time = t_end - t_start;
+    prof.setup_time = opj_clock() - t_setup_start;
 
-    t_start = opj_clock();
+    // Compress
+    double t_compress_start = opj_clock();
     if (!opj_start_compress(codec, image, stream)) {
         fprintf(stderr, "opj_start_compress failed\n");
         opj_stream_destroy(stream);
@@ -271,10 +307,9 @@ int main(int argc, char** argv) {
         opj_image_destroy(image);
         return 1;
     }
-    t_end = opj_clock();
-    prof_times.compress_start_time = t_end - t_start;
+    prof.compress_start_time = opj_clock() - t_compress_start;
 
-    t_start = opj_clock();
+    double t_encode_start = opj_clock();
     if (!opj_encode(codec, stream)) {
         fprintf(stderr, "opj_encode failed\n");
         opj_end_compress(codec, stream);
@@ -283,10 +318,9 @@ int main(int argc, char** argv) {
         opj_image_destroy(image);
         return 1;
     }
-    t_end = opj_clock();
-    prof_times.encode_time = t_end - t_start;
+    prof.encode_time = opj_clock() - t_encode_start;
 
-    t_start = opj_clock();
+    double t_end_start = opj_clock();
     if (!opj_end_compress(codec, stream)) {
         fprintf(stderr, "opj_end_compress failed\n");
         opj_stream_destroy(stream);
@@ -294,68 +328,27 @@ int main(int argc, char** argv) {
         opj_image_destroy(image);
         return 1;
     }
-    t_end = opj_clock();
-    prof_times.compress_end_time = t_end - t_start;
+    prof.compress_end_time = opj_clock() - t_end_start;
 
-    double total_end = opj_clock();
-    prof_times.total_time = total_end - total_start;
+    prof.total_time = opj_clock() - total_start;
 
-    // Open profiling log file
-    FILE* log_fp = fopen("profiling_results.txt", "a");
-    FILE* outputs[2] = {stdout, log_fp};
-    
-    for (int out_idx = 0; out_idx < 2; out_idx++) {
-        FILE* fp = outputs[out_idx];
-        if (!fp) continue;
-        
-        fprintf(fp, "\n=== ENCODING PROFILING RESULTS ===\n");
-        fprintf(fp, "Input file: %s\n", in_path);
-        fprintf(fp, "Image size: %dx%d\n", image->x1 - image->x0, image->y1 - image->y0);
-        fprintf(fp, "====================================\n");
-        fprintf(fp, "Load image:       %8.4f s (%5.1f%%)\n", 
-               prof_times.load_image_time, 
-               100.0 * prof_times.load_image_time / prof_times.total_time);
-        fprintf(fp, "Setup encoder:    %8.4f s (%5.1f%%)\n", 
-               prof_times.setup_time,
-               100.0 * prof_times.setup_time / prof_times.total_time);
-        fprintf(fp, "Start compress:   %8.4f s (%5.1f%%)\n", 
-               prof_times.compress_start_time,
-               100.0 * prof_times.compress_start_time / prof_times.total_time);
-        fprintf(fp, "------------------------------------\n");
-        fprintf(fp, "Encode (main):    %8.4f s (%5.1f%%)\n", 
-               prof_times.encode_time,
-               100.0 * prof_times.encode_time / prof_times.total_time);
-        fprintf(fp, "  ├─ DC shift:    %8.4f s (%5.1f%%)\n",
-               global_timing.dc_shift_time,
-               100.0 * global_timing.dc_shift_time / prof_times.total_time);
-        fprintf(fp, "  ├─ MCT:         %8.4f s (%5.1f%%)\n",
-               global_timing.mct_time,
-               100.0 * global_timing.mct_time / prof_times.total_time);
-        fprintf(fp, "  ├─ DWT:         %8.4f s (%5.1f%%)\n",
-               global_timing.dwt_time,
-               100.0 * global_timing.dwt_time / prof_times.total_time);
-        fprintf(fp, "  ├─ T1 (quant):  %8.4f s (%5.1f%%)\n",
-               global_timing.t1_time,
-               100.0 * global_timing.t1_time / prof_times.total_time);
-        fprintf(fp, "  ├─ Rate alloc:  %8.4f s (%5.1f%%)\n",
-               global_timing.rate_time,
-               100.0 * global_timing.rate_time / prof_times.total_time);
-        fprintf(fp, "  └─ T2 (stream): %8.4f s (%5.1f%%)\n",
-               global_timing.t2_time,
-               100.0 * global_timing.t2_time / prof_times.total_time);
-        fprintf(fp, "------------------------------------\n");
-        fprintf(fp, "End compress:     %8.4f s (%5.1f%%)\n", 
-               prof_times.compress_end_time,
-               100.0 * prof_times.compress_end_time / prof_times.total_time);
-        fprintf(fp, "====================================\n");
-        fprintf(fp, "TOTAL TIME:       %8.4f s\n", prof_times.total_time);
-        fprintf(fp, "====================================\n\n");
-    }
-    
-    if (log_fp) {
-        fclose(log_fp);
-        printf("Profiling results saved to: profiling_results.txt\n");
-    }
+    // Print results
+    printf("\n=== Profiling Results ===\n");
+    printf("File I/O:         %.4fs (%5.1f%%)\n", prof.load_image_time, 
+           100.0 * prof.load_image_time / prof.total_time);
+    printf("Pixel Convert:    %.4fs (%5.1f%%) [PIXEL_PARALLEL=%d]\n", prof.pixel_convert_time,
+           100.0 * prof.pixel_convert_time / prof.total_time, PIXEL_PARALLEL);
+    printf("Setup:            %.4fs (%5.1f%%)\n", prof.setup_time,
+           100.0 * prof.setup_time / prof.total_time);
+    printf("Compress Start:   %.4fs (%5.1f%%)\n", prof.compress_start_time,
+           100.0 * prof.compress_start_time / prof.total_time);
+    printf("Encode (T1+DWT):  %.4fs (%5.1f%%) [T1_PARALLEL=%d]\n", prof.encode_time,
+           100.0 * prof.encode_time / prof.total_time, T1_PARALLEL);
+    printf("Compress End:     %.4fs (%5.1f%%)\n", prof.compress_end_time,
+           100.0 * prof.compress_end_time / prof.total_time);
+    printf("=========================\n");
+    printf("TOTAL:            %.4fs\n", prof.total_time);
+    printf("=========================\n");
 
     opj_stream_destroy(stream);
     opj_destroy_codec(codec);

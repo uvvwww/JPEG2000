@@ -83,6 +83,37 @@ convert restored.ppm restored.jpg
 *   修改後，只需重新執行 `make` 即可重新編譯。
 *   若要清除編譯檔案，請執行 `make clean`。
 
+## 平行化與切塊 (Parallelism & Tiling)
+
+- `OMP_NUM_THREADS`: 設定 OpenJPEG 內部編碼執行緒數。
+  - 例: `OMP_NUM_THREADS=8 ./build/j2k_encode_pnm a.ppm a.j2k`
+- `J2K_TILE_W`, `J2K_TILE_H`: 啟用 Tile-based 編碼，將影像分塊後再編碼，可降低記憶體峰值並增加平行度。
+  - 例: `J2K_TILE_W=1024 J2K_TILE_H=1024 ./build/j2k_encode_pnm a.ppm a.j2k`
+- `J2K_CBLKW`, `J2K_CBLKH`: 覆寫 codeblock 大小 (須為 2 的次方，且乘積 ≤ 4096；常見為 32×32 或 64×64)。
+  - 例: `J2K_CBLKW=64 J2K_CBLKH=64 ./build/j2k_encode_pnm a.ppm a.j2k`
+
+### MPI 批次編碼
+
+`j2k_encode_mpi.cpp` 會將多張輸入圖片分配到多個 MPI ranks 平行編碼；每個 rank 內部仍可使用多執行緒：
+
+```bash
+export OMP_NUM_THREADS=4
+srun -N 1 -n 4 ./build/j2k_encode_mpi input/img1.ppm input/img2.ppm input/img3.ppm
+```
+
+也可搭配切塊以提升可伸縮性：
+
+```bash
+export OMP_NUM_THREADS=4
+export J2K_TILE_W=1024 J2K_TILE_H=1024
+srun -N 1 -n 4 ./build/j2k_encode_mpi input/*.ppm
+```
+
+建議：
+- 大圖 (≥4K) 可嘗試 1024×1024 或 2048×2048 tiles。
+- Codeblock 32×32 通常較佳；64×64 有時對 Tier‑1 計算更友善，但壓縮效率可能略變。
+- 總執行緒數 = `MPI ranks × OMP_NUM_THREADS`，請與 CPU 實際核心數匹配。
+
 ## 專案來源 (Origin)
 
 本專案程式碼衍生自 OpenJPEG 官方儲存庫：
@@ -175,4 +206,3 @@ convert restored.ppm restored.jpg
     *   `function_list.cpp`: 內部函式列表管理。
     *   `invert.cpp`: 矩陣反轉 (用於 MCT)。
     *   `ht_dec.cpp`: High Throughput (HTJ2K) 解碼支援。
-

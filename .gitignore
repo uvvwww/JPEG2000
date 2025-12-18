@@ -65,3 +65,4 @@ slurm-*.err
 # System
 .gitkeep
 EOF
+output/*.j2k

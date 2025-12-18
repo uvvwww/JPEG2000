@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <omp.h>
 
 #include "openjpeg.h"
 
@@ -68,6 +69,9 @@ static opj_image_t* load_pnm_as_image(const char* path) {
         fprintf(stderr, "Cannot open input: %s\n", path);
         return NULL;
     }
+
+    /* Improve throughput on large PPM/PGM (best-effort) */
+    (void)setvbuf(fp, NULL, _IOFBF, 4 * 1024 * 1024);
 
     char tok[64];
     if (!read_non_comment_token(fp, tok, sizeof(tok))) {
@@ -155,12 +159,14 @@ static opj_image_t* load_pnm_as_image(const char* path) {
     }
 
     if (is_ppm) {
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < pixels; i++) {
             image->comps[0].data[i] = data[i * 3 + 0];
             image->comps[1].data[i] = data[i * 3 + 1];
             image->comps[2].data[i] = data[i * 3 + 2];
         }
     } else {
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < pixels; i++) {
             image->comps[0].data[i] = data[i];
         }
@@ -194,6 +200,33 @@ int main(int argc, char** argv) {
     
     /* Use standard JPEG2000 settings: 6 resolution levels (5 DWT decompositions) */
     parameters.numresolution = 6;
+
+    /* Optional: enable tiling via environment variables */
+    const char* env_tile_w = getenv("J2K_TILE_W");
+    const char* env_tile_h = getenv("J2K_TILE_H");
+    if (env_tile_w && env_tile_h) {
+        int tile_w = atoi(env_tile_w);
+        int tile_h = atoi(env_tile_h);
+        if (tile_w > 0 && tile_h > 0) {
+            parameters.tile_size_on = OPJ_TRUE;
+            parameters.cp_tdx = tile_w;
+            parameters.cp_tdy = tile_h;
+            fprintf(stdout, "Using tiling: %dx%d\n", tile_w, tile_h);
+        }
+    }
+
+    /* Optional: override codeblock size for more/less granularity */
+    const char* env_cblkw = getenv("J2K_CBLKW");
+    const char* env_cblkh = getenv("J2K_CBLKH");
+    if (env_cblkw && env_cblkh) {
+        int cblkw = atoi(env_cblkw);
+        int cblkh = atoi(env_cblkh);
+        if (cblkw > 0 && cblkh > 0) {
+            parameters.cblockw_init = cblkw;
+            parameters.cblockh_init = cblkh;
+            fprintf(stdout, "Using codeblock: %dx%d\n", cblkw, cblkh);
+        }
+    }
 
     opj_codec_t* codec = opj_create_compress(OPJ_CODEC_J2K);
     if (!codec) {

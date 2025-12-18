@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <omp.h>
 
 #include "openjpeg.h"
 
@@ -70,40 +71,61 @@ static int write_pnm_u8(const char* path, const opj_image_t* image) {
 
     const size_t pixels = (size_t)width * (size_t)height;
     if (numcomps == 3) {
+        /* Allocate buffer for batch write */
+        unsigned char* buf = (unsigned char*)malloc(pixels * 3);
+        if (!buf) {
+            fclose(fp);
+            return 0;
+        }
+
+        const int rshift = (int)image->comps[0].prec - 8;
+        const int gshift = (int)image->comps[1].prec - 8;
+        const int bshift = (int)image->comps[2].prec - 8;
+
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < pixels; i++) {
             int r = image->comps[0].data[i];
             int g = image->comps[1].data[i];
             int b = image->comps[2].data[i];
 
-            /* If precision > 8, downshift to 8-bit. */
-            int rshift = (int)image->comps[0].prec - 8;
-            int gshift = (int)image->comps[1].prec - 8;
-            int bshift = (int)image->comps[2].prec - 8;
             if (rshift > 0) r >>= rshift;
             if (gshift > 0) g >>= gshift;
             if (bshift > 0) b >>= bshift;
 
-            unsigned char out[3];
-            out[0] = clamp_u8(r);
-            out[1] = clamp_u8(g);
-            out[2] = clamp_u8(b);
-            if (fwrite(out, 1, 3, fp) != 3) {
-                fclose(fp);
-                return 0;
-            }
+            buf[i * 3 + 0] = clamp_u8(r);
+            buf[i * 3 + 1] = clamp_u8(g);
+            buf[i * 3 + 2] = clamp_u8(b);
+        }
+
+        size_t written = fwrite(buf, 1, pixels * 3, fp);
+        free(buf);
+        if (written != pixels * 3) {
+            fclose(fp);
+            return 0;
         }
     } else {
+        unsigned char* buf = (unsigned char*)malloc(pixels);
+        if (!buf) {
+            fclose(fp);
+            return 0;
+        }
+
+        const int shift = (int)image->comps[0].prec - 8;
+
+        #pragma omp parallel for schedule(static)
         for (size_t i = 0; i < pixels; i++) {
             int v = image->comps[0].data[i];
-            int shift = (int)image->comps[0].prec - 8;
             if (shift > 0) {
                 v >>= shift;
             }
-            unsigned char out = clamp_u8(v);
-            if (fwrite(&out, 1, 1, fp) != 1) {
-                fclose(fp);
-                return 0;
-            }
+            buf[i] = clamp_u8(v);
+        }
+
+        size_t written = fwrite(buf, 1, pixels, fp);
+        free(buf);
+        if (written != pixels) {
+            fclose(fp);
+            return 0;
         }
     }
 
@@ -131,6 +153,12 @@ int main(int argc, char** argv) {
     opj_set_error_handler(codec, error_callback, NULL);
     opj_set_warning_handler(codec, warning_callback, NULL);
     opj_set_info_handler(codec, info_callback, NULL);
+
+    /* Enable multi-threaded decoding */
+    int num_threads = omp_get_max_threads();
+    if (num_threads > 0) {
+        opj_codec_set_threads(codec, num_threads);
+    }
 
     opj_stream_t* stream = opj_stream_create_default_file_stream(in_path, OPJ_TRUE);
     if (!stream) {

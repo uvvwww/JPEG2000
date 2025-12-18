@@ -68,7 +68,7 @@ DECODER := $(BUILD_DIR)/j2k_decode_pnm
 
 .PHONY: all clean
 
-all: $(TARGET) $(ENCODER) $(DECODER)
+all: $(TARGET) $(ENCODER) $(DECODER) $(BUILD_DIR)/j2k_encode_mpi $(BUILD_DIR)/j2k_encode_mpi_tile $(BUILD_DIR)/merge_tiles
 
 # Optional MPI version
 mpi: $(BUILD_DIR)/j2k_encode_mpi
@@ -87,11 +87,40 @@ $(DECODER): $(BUILD_DIR)/j2k_decode_pnm.o $(TARGET)
 $(BUILD_DIR)/j2k_encode_mpi: j2k_encode_mpi.cpp $(TARGET)
 	$(MPIXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
+$(BUILD_DIR)/j2k_encode_mpi_tile: j2k_encode_mpi.cpp $(TARGET)
+	$(MPIXX) $(CXXFLAGS) -DTILE_PARALLEL $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_encode_mpi_tile: j2k_encode_mpi.cpp $(TARGET)
+	$(MPIXX) $(CXXFLAGS) -DTILE_PARALLEL $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/j2k_encode_profile: j2k_encode_profile.cpp $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/j2k_decode_profile: j2k_decode_profile.cpp $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/merge_tiles: merge_tiles.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+# Experiment builds with different OpenMP configurations
+$(BUILD_DIR)/j2k_exp_all: j2k_encode_experiment.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) -DPIXEL_PARALLEL=1 -DT1_PARALLEL=1 $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_exp_t1_only: j2k_encode_experiment.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) -DPIXEL_PARALLEL=0 -DT1_PARALLEL=1 $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_exp_pixel_only: j2k_encode_experiment.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) -DPIXEL_PARALLEL=1 -DT1_PARALLEL=0 $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/j2k_exp_none: j2k_encode_experiment.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) -DPIXEL_PARALLEL=0 -DT1_PARALLEL=0 $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+experiment: $(BUILD_DIR)/j2k_exp_all $(BUILD_DIR)/j2k_exp_t1_only $(BUILD_DIR)/j2k_exp_pixel_only $(BUILD_DIR)/j2k_exp_none
+	@echo "Experiment builds ready:"
+	@echo "  j2k_exp_all       - All OpenMP optimizations"
+	@echo "  j2k_exp_t1_only   - Only T1 parallel"
+	@echo "  j2k_exp_pixel_only - Only pixel conversion parallel"
+	@echo "  j2k_exp_none      - No OpenMP (baseline)"
 
 $(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cpp
 	@mkdir -p $(dir $@)

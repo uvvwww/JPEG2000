@@ -6775,6 +6775,14 @@ OPJ_BOOL opj_j2k_set_threads(opj_j2k_t *j2k, OPJ_UINT32 num_threads)
     /* Currently we pass the thread-pool to the tcd, so we cannot re-set it */
     /* afterwards */
     if (opj_has_thread_support() && j2k->m_tcd == NULL) {
+        static OPJ_UINT32 cached_num_threads = (OPJ_UINT32)-1;
+        
+        /* Fast path: if same thread count as last call, reuse thread pool */
+        if (cached_num_threads == num_threads && j2k->m_tp != NULL) {
+            return OPJ_TRUE;
+        }
+        
+        /* Destroy old thread pool only if thread count changed */
         opj_thread_pool_destroy(j2k->m_tp);
         j2k->m_tp = NULL;
         if (num_threads <= (OPJ_UINT32)INT_MAX) {
@@ -6782,8 +6790,10 @@ OPJ_BOOL opj_j2k_set_threads(opj_j2k_t *j2k, OPJ_UINT32 num_threads)
         }
         if (j2k->m_tp == NULL) {
             j2k->m_tp = opj_thread_pool_create(0);
+            cached_num_threads = (OPJ_UINT32)-1;
             return OPJ_FALSE;
         }
+        cached_num_threads = num_threads;
         return OPJ_TRUE;
     }
     return OPJ_FALSE;
@@ -6791,15 +6801,24 @@ OPJ_BOOL opj_j2k_set_threads(opj_j2k_t *j2k, OPJ_UINT32 num_threads)
 
 static int opj_j2k_get_default_thread_count(void)
 {
-    const char* num_threads_str = getenv("OPJ_NUM_THREADS");
+    static int cached_threads = -1;
+    const char* num_threads_str;
     int num_cpus;
     int num_threads;
 
+    /* Fast path: return cached value from first call */
+    if (cached_threads >= 0) {
+        return cached_threads;
+    }
+
+    num_threads_str = getenv("OPJ_NUM_THREADS");
     if (num_threads_str == NULL || !opj_has_thread_support()) {
+        cached_threads = 0;
         return 0;
     }
     num_cpus = opj_get_num_cpus();
     if (strcmp(num_threads_str, "ALL_CPUS") == 0) {
+        cached_threads = num_cpus;
         return num_cpus;
     }
     if (num_cpus == 0) {
@@ -6811,6 +6830,7 @@ static int opj_j2k_get_default_thread_count(void)
     } else if (num_threads > 2 * num_cpus) {
         num_threads = 2 * num_cpus;
     }
+    cached_threads = num_threads;
     return num_threads;
 }
 
