@@ -88,10 +88,12 @@ endif
 TARGET  := $(BUILD_DIR)/libopenjp2_j2k.a
 ENCODER := $(BUILD_DIR)/j2k_encode_pnm
 DECODER := $(BUILD_DIR)/j2k_decode_pnm
+ENCODER_PROFILE := $(BUILD_DIR)/j2k_encode_profile
+DECODER_PROFILE := $(BUILD_DIR)/j2k_decode_profile
 
 .PHONY: all clean
 
-all: $(TARGET) $(ENCODER) $(DECODER)
+all: $(TARGET) $(ENCODER) $(DECODER) $(ENCODER_PROFILE) $(DECODER_PROFILE)
 
 # Optional MPI version
 mpi: $(BUILD_DIR)/j2k_encode_mpi
@@ -107,14 +109,14 @@ $(ENCODER): $(BUILD_DIR)/j2k_encode_pnm.o $(TARGET)
 $(DECODER): $(BUILD_DIR)/j2k_decode_pnm.o $(TARGET)
 	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
+$(ENCODER_PROFILE): j2k_encode_profile.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
+$(DECODER_PROFILE): j2k_decode_profile.cpp $(TARGET)
+	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/j2k_encode_mpi: j2k_encode_mpi.cpp $(TARGET)
 	$(MPIXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
-
-$(BUILD_DIR)/j2k_encode_profile: j2k_encode_profile.cpp $(TARGET)
-	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
-
-$(BUILD_DIR)/j2k_decode_profile: j2k_decode_profile.cpp $(TARGET)
-	$(CXX) $(CXXFLAGS) $< -L$(BUILD_DIR) -lopenjp2_j2k $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/%.o: $(OPENJP2_DIR)/%.cpp
 	@mkdir -p $(dir $@)

@@ -23,7 +23,7 @@ typedef struct {
     double compress_end_time;
 } profile_times_t;
 
-static profile_times_t prof_times = {0};
+static profile_times_t prof_times = {};
 
 static void error_callback(const char* msg, void* client_data) {
     (void)client_data;
