@@ -1,0 +1,131 @@
+# ==========================================
+# Build artifacts
+# ==========================================
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.d
+
+# ==========================================
+# Executables
+# ==========================================
+j2k_encode_pnm
+j2k_decode_pnm
+j2k_encode_profile
+j2k_decode_profile
+j2k_encode_mpi
+j2k_encode_mpi_tile
+merge_tiles
+*.exe
+*.out
+
+# ==========================================
+# Documentation and scripts
+# ==========================================
+*.md
+*.sh
+
+# ==========================================
+# Large media files (images)
+# ==========================================
+# Input images
+input/*.ppm
+input/*.pnm
+input/*.pgm
+input/*.png
+dataset/*.ppm
+dataset/*.pnm
+dataset/*.pgm
+dataset/*.png
+dataset/*.jpg
+dataset/*.jpeg
+
+# Output encoded files (全局忽略)
+*.j2k
+*.j2c
+*.jp2
+output/*.j2k
+output/*.j2c
+output/*.jp2
+output/*.ppm
+output/*.pnm
+output/*.pgm
+output/*.png
+
+# ==========================================
+# Profiling and logs
+# ==========================================
+profiling_results.txt
+profile_result/*.log
+profile_result/benchmark_*.log
+logs/*.log
+*.log
+*.err
+
+# ==========================================
+# Temporary files
+# ==========================================
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+*.bak
+*.backup
+
+# ==========================================
+# IDE and editor files
+# ==========================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.clangd
+compile_commands.json
+.vs/
+
+# ==========================================
+# Python cache
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# ==========================================
+# CMake/Make generated files
+# ==========================================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ==========================================
+# Git/system files
+# ==========================================
+Thumbs.db
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# SLURM
+slurm-*.out
+slurm-*.err
+
+# System
+.gitkeep
+EOF
+output/*.j2k
