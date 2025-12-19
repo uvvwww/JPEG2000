@@ -1,0 +1,11 @@
+config,dataset,size_MB,total_time_sec
+baseline_1c,small,1,6.7313
+baseline_1c,medium,69,20.6711
+1N_1n_32c,small,1,38.4915
+1N_1n_32c,medium,69,5.6064
+1N_2n_16c,small,1,2.1469
+1N_2n_16c,medium,69,2.6679
+2N_2n_16c,small,1,3.5603
+2N_2n_16c,medium,69,FAILED
+2N_4n_8c,small,1,FAILED
+2N_4n_8c,medium,69,FAILED
